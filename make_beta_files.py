@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Beta: builds 3 test HTML files (about 30MB, 50MB and 70MB) with fake Hebrew articles,
-using exactly the same viewer/format as wiki_he_to_html.py.
+Beta: builds test HTML files with fake Hebrew articles, using exactly the same viewer/format as wiki_he_to_html.py:
+  * Beta-<N>MB.html            viewer files (JavaScript viewer) - only if --sizes is given
+  * Beta-Static-<N>MB.html     plain HTML, NO JavaScript needed (default: 30, 50 and 100 MB) - same format as the real output
+Every viewer file shows a line at the top: "JavaScript: works" (if it says "not working" the app has JavaScript off).
 Purpose: check on the phone (HTML viewer app) which file size opens, how long it takes to load,
 and that search / browse / links / back / font size work.
 
@@ -18,7 +20,10 @@ import time
 import wiki_he_to_html as W
 
 LETTERS = "אבגדהוזחטיכלמנסעפצקרשת"
-SIZES_MB = [30, 50, 70]
+SIZES_MB = []            # JavaScript viewer files: none by default (the app blocks JavaScript)
+STATIC_MB = [30, 50, 100]
+BANNER = ('<div id="js" style="background:#fff3cd;color:#000;padding:4px 8px;font-size:14px">JavaScript: לא עובד (אם השורה הזו נשארת כך, האפליקציה חוסמת JavaScript)</div>'
+          '<script>document.getElementById("js").textContent="JavaScript: עובד ✓";document.getElementById("js").style.background="#d4edda";</script>')
 
 
 def log(*a):
@@ -50,10 +55,11 @@ def make_article(rnd, vocab, i, total_hint):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--outdir", default="output_beta")
-    ap.add_argument("--sizes", default=",".join(map(str, SIZES_MB)), help="comma separated MB, default 30,50,70")
+    ap.add_argument("--sizes", default=",".join(map(str, SIZES_MB)), help="viewer files, comma separated MB (decimals ok)")
+    ap.add_argument("--static-sizes", default=",".join(map(str, STATIC_MB)), help="plain-HTML files, comma separated MB (empty = none)")
     ap.add_argument("--block-kb", type=int, default=512)
     args = ap.parse_args()
-    sizes = [int(x) for x in args.sizes.split(",")]
+    sizes = [float(x) for x in args.sizes.split(",") if x.strip()]
     os.makedirs(args.outdir, exist_ok=True)
 
     rnd = random.Random(12345)
@@ -67,7 +73,7 @@ def main():
     next_id = 0
     t0 = time.time()
     for mb in sizes:
-        target = mb * 1000 * 1000
+        target = int(mb * 1000 * 1000)
         f = {"mb": mb, "lo": next_id, "bs": [], "blobs": [], "bytes": 0}
         buf, size, start = [], 0, next_id
         while True:
@@ -97,7 +103,7 @@ def main():
 
     total = next_id
     titles = ["ערך בדיקה %06d" % i for i in range(total)]
-    names = ["Beta-%dMB.html" % f["mb"] for f in files]
+    names = ["Beta-%gMB.html" % f["mb"] for f in files]
     plist = [{"lo": f["lo"], "hi": f["hi"], "name": names[i], "a": titles[f["lo"]], "z": titles[f["hi"] - 1]}
              for i, f in enumerate(files)]
     built = datetime.date.today().isoformat()
@@ -106,8 +112,8 @@ def main():
     for i, f in enumerate(files):
         tt = W.deflate_b64("\n".join(titles[f["lo"]:f["hi"]]))
         rr = W.deflate_b64("")
-        title = "בדיקת בטא %dMB" % f["mb"]
-        head = W.HEAD.replace("@@TITLE@@", title).replace("@@TT@@", tt).replace("@@RR@@", rr).encode("utf-8")
+        title = "בדיקת בטא %gMB" % f["mb"]
+        head = W.HEAD.replace("@@TITLE@@", title).replace("@@TT@@", tt).replace("@@RR@@", rr).replace('<div id="bar">', BANNER + '<div id="bar">', 1).encode("utf-8")
         meta = {"v": 2, "part": i, "parts": plist, "bs": f["bs"], "zim": "fake-test-data", "built": built,
                 "title": title, "total": total}
         path = os.path.join(args.outdir, names[i])
@@ -119,6 +125,27 @@ def main():
                 out.write(b"</script>\n")
             out.write(W.make_tail(meta))
         log("wrote %s  %.1f MB" % (path, os.path.getsize(path) / 1e6))
+    # ---- plain static HTML files (no JavaScript at all)
+    link_re = re.compile(r'<a data-i="(\d+)">(.*?)</a>', re.S)
+    for smb in [float(x) for x in args.static_sizes.split(",") if x.strip()]:
+        target = int(smb * 1000 * 1000)
+        arts, sizeb, n = [], 0, 0
+        while sizeb < target - 200000:
+            h = make_article(rnd, vocab, n, 1)
+            arts.append(h)
+            sizeb += len(h.encode("utf-8")) + 200
+            n += 1
+        toc = "".join('<div><a href="#a%d">ערך בדיקה %06d</a></div>' % (i, i) for i in range(n))
+        path = os.path.join(args.outdir, "Beta-Static-%gMB.html" % smb)
+        with open(path, "w", encoding="utf-8") as out:
+            out.write(W.static_head("בדיקה - HTML רגיל %gMB" % smb))
+            out.write('<h1 id="top">HTML רגיל ללא JavaScript - %d ערכים</h1><div id="toc">%s</div><hr>' % (n, toc))
+            for i, h in enumerate(arts):
+                h = link_re.sub(lambda m: ('<a href="#a%s">%s</a>' % (m.group(1), m.group(2)))
+                                if int(m.group(1)) < n else m.group(2), h)
+                out.write('<h1 id="a%d">ערך בדיקה %06d</h1>%s<p><a href="#top">&#8593; לראש הקובץ (אינדקס)</a></p><hr>\n' % (i, i, h))
+            out.write("</body></html>\n")
+        log("wrote %s  %.1f MB  (%d articles)" % (path, os.path.getsize(path) / 1e6, n))
     log("done in %.0fs" % (time.time() - t0))
 
 
