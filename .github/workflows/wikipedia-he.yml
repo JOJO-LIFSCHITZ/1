@@ -1,10 +1,28 @@
-name: Hebrew Wikipedia to HTML (5 Parts)
+name: Hebrew Wikipedia + Wikiquote + Hamichlol to HTML
 
 on:
   workflow_dispatch:
     inputs:
+      build_wikipedia:
+        description: "Build Hebrew Wikipedia"
+        required: true
+        type: boolean
+        default: true
+
+      build_wikiquote:
+        description: "Build Hebrew Wikiquote"
+        required: true
+        type: boolean
+        default: true
+
+      hamichlol_zim_url:
+        description: "Hamichlol: direct URL of the .zim file (from the Hamichlol download page). Empty = skip Hamichlol"
+        required: false
+        type: string
+        default: ""
+
       variant:
-        description: "ZIM type: nopic = full articles without images, mini = only intro"
+        description: "Wikipedia ZIM type: nopic = full articles without images, mini = only the intro of each article (small, good for a first test)"
         required: true
         type: choice
         options:
@@ -12,14 +30,26 @@ on:
           - mini
         default: nopic
 
-      zim_url:
-        description: "Optional: direct URL of a .zim file (leave empty = newest from download.kiwix.org)"
+      wikipedia_zim_url:
+        description: "Optional: direct URL of the Wikipedia .zim (empty = newest from download.kiwix.org)"
         required: false
         type: string
         default: ""
 
+      wikiquote_zim_url:
+        description: "Optional: direct URL of the Wikiquote .zim (empty = newest from download.kiwix.org)"
+        required: false
+        type: string
+        default: ""
+
+      part_mb:
+        description: "Target size of every HTML file in MB (a file may go a little over, up to ~32)"
+        required: true
+        type: string
+        default: "30"
+
       keep_references:
-        description: "Keep the footnotes/references list"
+        description: "Keep the footnotes/references list (bigger files)"
         required: true
         type: choice
         options:
@@ -27,23 +57,57 @@ on:
           - "true"
         default: "false"
 
-      release_name:
-        description: "Release name"
-        required: true
+      limit:
+        description: "Optional: only the first N articles of each source (for testing, e.g. 3000). Empty = all"
+        required: false
         type: string
-        default: "Hebrew-Wikipedia-Offline-5Parts"
+        default: ""
 
 permissions:
   contents: write
 
 concurrency:
-  group: wikipedia-he-5parts-${{ github.run_id }}
+  group: wiki-he-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      any: ${{ steps.m.outputs.any }}
+    steps:
+      - name: Decide which sources to build
+        id: m
+        env:
+          WIKIPEDIA: ${{ inputs.build_wikipedia }}
+          WIKIQUOTE: ${{ inputs.build_wikiquote }}
+          HAMICHLOL_URL: ${{ inputs.hamichlol_zim_url }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          items = []
+          if os.environ["WIKIPEDIA"] == "true":
+              items.append({"source": "wikipedia", "title": "ויקיפדיה העברית", "base": "Wikipedia-he"})
+          if os.environ["WIKIQUOTE"] == "true":
+              items.append({"source": "wikiquote", "title": "ויקיציטוט העברית", "base": "Wikiquote-he"})
+          if os.environ["HAMICHLOL_URL"].strip():
+              items.append({"source": "hamichlol", "title": "המכלול", "base": "Hamichlol"})
+          out = os.environ["GITHUB_OUTPUT"]
+          with open(out, "a") as f:
+              f.write("matrix=" + json.dumps({"include": items}) + "\n")
+              f.write("any=" + ("true" if items else "false") + "\n")
+          print(items)
+          PY
+
   build:
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
 
     steps:
       - name: Checkout
@@ -60,19 +124,81 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python packages
-        run: pip install libzim lxml requests
+        run: pip install libzim lxml
 
-      - name: Run Converter
-        run: |
-          python wikipedia_to_html.py --zim "${{ github.event.inputs.zim_url }}" --zip ${{ github.event.inputs.keep_references == 'true' && '--keep-references' || '' }}
+      - name: Find and download the ZIM file
         env:
-          ZIM_URL: ${{ github.event.inputs.zim_url }}
+          SOURCE: ${{ matrix.source }}
+          VARIANT: ${{ inputs.variant }}
+          WIKIPEDIA_URL: ${{ inputs.wikipedia_zim_url }}
+          WIKIQUOTE_URL: ${{ inputs.wikiquote_zim_url }}
+          HAMICHLOL_URL: ${{ inputs.hamichlol_zim_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p work output
+          ZIM_URL=""
+          case "$SOURCE" in
+            wikipedia) ZIM_URL="$WIKIPEDIA_URL" ;;
+            wikiquote) ZIM_URL="$WIKIQUOTE_URL" ;;
+            hamichlol) ZIM_URL="$HAMICHLOL_URL" ;;
+          esac
+          if [ -z "$ZIM_URL" ]; then
+            ZIM_URL="$(python3 - <<'PY'
+          import os, re, sys, urllib.request
+          source = os.environ["SOURCE"]
+          variant = os.environ["VARIANT"]
+          if source == "wikipedia":
+              base = "https://download.kiwix.org/zim/wikipedia/"
+              pat = r'wikipedia_he_all_%s_(\d{4}-\d{2})\.zim' % re.escape(variant)
+              name = "wikipedia_he_all_%s_%%s.zim" % variant
+          else:
+              base = "https://download.kiwix.org/zim/wikiquote/"
+              pat = r'wikiquote_he_all_maxi_(\d{4}-\d{2})\.zim'
+              name = "wikiquote_he_all_maxi_%s.zim"
+          req = urllib.request.Request(base, headers={"User-Agent": "Mozilla/5.0"})
+          html = urllib.request.urlopen(req, timeout=60).read().decode("utf-8", "replace")
+          found = re.findall(pat, html)
+          if not found:
+              sys.stderr.write("No matching .zim in %s - pass the zim url manually (see library.kiwix.org)\n" % base)
+              sys.exit(1)
+          print(base + name % max(found))
+          PY
+          )"
+          fi
+          echo "ZIM URL: $ZIM_URL"
+          curl -fL --retry 10 --retry-delay 15 --retry-all-errors -C - -A "Mozilla/5.0" -o work/src.zim "$ZIM_URL"
+          ls -lh work/src.zim
+          test "$(stat -c %s work/src.zim)" -gt 1000000
+          df -h /
 
-      - name: Upload Release Assets
+      - name: Build offline HTML (30MB parts, named by first and last article)
+        env:
+          PART_MB: ${{ inputs.part_mb }}
+          KEEP_REFS: ${{ inputs.keep_references }}
+          LIMIT: ${{ inputs.limit }}
+          TITLE: ${{ matrix.title }}
+          BASE: ${{ matrix.base }}
+        run: |
+          set -euo pipefail
+          EXTRA=""
+          if [ "$KEEP_REFS" = "true" ]; then EXTRA="$EXTRA --keep-references"; fi
+          if [ -n "$LIMIT" ]; then EXTRA="$EXTRA --limit $LIMIT"; fi
+          python3 wiki_he_to_html.py \
+            --zim work/src.zim \
+            --workdir work/tmp \
+            --outdir output \
+            --part-mb "$PART_MB" \
+            --title "$TITLE" \
+            --base-name "$BASE" \
+            --zip $EXTRA
+          ls -lh output
+          df -h /
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: release-${{ github.run_id }}
-          name: ${{ github.event.inputs.release_name }}
+          tag_name: ${{ matrix.source }}-he-${{ github.run_number }}
+          name: ${{ matrix.title }} - HTML לא מקוון (${{ github.run_number }})
+          generate_release_notes: false
+          fail_on_unmatched_files: true
           files: output/*.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
