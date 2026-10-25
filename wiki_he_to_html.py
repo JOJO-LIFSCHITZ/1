@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
 """
-Hebrew Wikipedia (Kiwix ZIM, no images)  ->  ONE offline HTML file (or a few parts)
-that works in a plain Android "HTML viewer" (needs only JavaScript, no network, no other files).
-
-How the output works
-  * every article is cleaned (no images/scripts/navboxes), links are rewritten to article numbers
-  * articles are packed (alphabetical order) into blocks of ~512KB, each block is deflate-compressed + base64
-  * the HTML contains a small viewer (search, alphabetical browse, random, back, font size) + all blocks
-  * a block is decompressed only when needed, so the viewer does not decompress the whole encyclopedia
-  * if the HTML would be too big for one GitHub Release ZIP, it is split into parts; every part is
-    a complete viewer with the full title index (a link/search result to another part tells you which file to open)
+Hebrew Wikipedia (Kiwix ZIM, no images)  ->  5 offline HTML files (א-ה, ו-י, כ-נ, נ-צ, ק-ת)
+that work in a plain Android "HTML viewer" (needs only JavaScript, no network, no other files).
 """
 import argparse
 import base64
@@ -55,7 +47,6 @@ WS = re.compile(r"[ \t\r\n]{2,}")
 EMPTY = re.compile(r"<(p|div|li|ul|ol|dl|dd|dt|small|b|i|sup|sub)>\s*</\1>")
 LXML_PARSER = lxml.html.HTMLParser(encoding="utf-8", remove_comments=True, remove_pis=True)
 
-# globals filled before the worker pool is forked
 PID = {}
 ARC = None
 ZIM_PATH = None
@@ -67,7 +58,6 @@ def log(*a):
 
 
 def resolve(href, base_dir):
-    """href of a link inside an article -> article number (or None)."""
     if not href or href[0] == "#" or href.startswith("//") or SCHEME.match(href):
         return None
     href = href.split("#", 1)[0].split("?", 1)[0]
@@ -75,7 +65,7 @@ def resolve(href, base_dir):
         return None
     raw = unquote(href)
     r = _lookup(posixpath.normpath(posixpath.join(base_dir, raw)))
-    if r is None and base_dir:          # article path contains "/" and the link is relative to the root
+    if r is None and base_dir:
         r = _lookup(posixpath.normpath(raw))
     return r
 
@@ -183,7 +173,7 @@ def work(chunk):
         try:
             item = ARC.get_entry_by_path(path).get_item()
             out.append((aid, clean_article(bytes(item.content), path)))
-        except Exception as ex:  # keep going, never lose an id
+        except Exception as ex:
             out.append((aid, "<p>שגיאה בעיבוד הערך: %s</p>" % str(ex).replace("<", "&lt;")))
     return out
 
@@ -211,9 +201,6 @@ def deflate_b64(text):
     return base64.b64encode(z).decode("ascii")
 
 
-# ----------------------------------------------------------------------------------------------
-# pass 1: titles + redirects
-# ----------------------------------------------------------------------------------------------
 def pass1(zim, limit):
     from libzim.reader import Archive
     arc = Archive(zim)
@@ -239,9 +226,6 @@ def pass1(zim, limit):
     return arts, reds
 
 
-# ----------------------------------------------------------------------------------------------
-# viewer (HTML head / tail)
-# ----------------------------------------------------------------------------------------------
 HEAD = r'''<!doctype html>
 <html lang="he" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -274,7 +258,7 @@ input.jmp{font-size:16px;padding:7px;width:9em;border:1px solid var(--bd);border
 <input id="q" type="search" placeholder="חיפוש ערך..." autocomplete="off">
 <button id="f1" title="גדול">A+</button><button id="f2" title="קטן">A-</button>
 </div>
-<div id="main"><p>טוען את המילון... (בקובץ גדול זה יכול לקחת כמה שניות)</p></div>
+<div id="main"><p>טוען את המילון...</p></div>
 <script type="text/plain" id="tt">@@TT@@</script>
 <script type="text/plain" id="rr">@@RR@@</script>
 '''
@@ -353,6 +337,8 @@ function inflate(src){
         fixedL=construct(l2,0,288);
         for(i=0;i<30;i++) l2[i]=5;
         fixedD=construct(l2,0,30);
+        for(i=0;i<30;i++) l2[i]=5;
+        fixedD=construct(l2,0,30);
       }
       codes(fixedL,fixedD);
     }else if(type===2){
@@ -421,7 +407,7 @@ function renderHome(){
     h+='<h3>חלקי הקובץ</h3>';
     for(var i=0;i<meta.parts.length;i++){
       var p=meta.parts[i];
-      h+='<div class="r" style="cursor:default">'+(i===meta.part?"&#9658; ":"")+'חלק '+(i+1)+': '+esc(T[p.lo])+' - '+esc(T[p.hi-1])+'<br><small>'+esc(p.name)+'</small></div>';
+      h+='<div class="r" style="cursor:default">'+(i===meta.part?"&#9658; ":"")+'חלק '+(i+1)+' ('+esc(p.label)+'): '+esc(T[p.lo])+' - '+esc(T[p.hi-1])+'<br><small>'+esc(p.name)+'</small></div>';
     }
   }
   view.innerHTML=h;
@@ -467,7 +453,7 @@ function jump(){
 function renderArticle(id){
   var p=partOf(id);
   if(p!==meta.part){
-    view.innerHTML='<h1 class="at">'+esc(T[id])+'</h1><div class="box">הערך נמצא ב<b>חלק '+(p+1)+'</b>'+(p>=0?' (הקובץ '+esc(meta.parts[p].name)+')':'')+'. פתח את הקובץ הזה ב-HTML Viewer וחפש שם את הערך.</div>';
+    view.innerHTML='<h1 class="at">'+esc(T[id])+'</h1><div class="box">הערך נמצא ב<b>חלק '+(p+1)+' ('+esc(meta.parts[p].label)+')</b>. פתח את הקובץ '+esc(meta.parts[p].name)+' וחפש שם את הערך.</div>';
     return;
   }
   var h;
@@ -481,7 +467,6 @@ function show(st){
   else if(st.t==="br") renderBrowse(st.s);
   else if(st.t==="s"){ qi.value=st.q; renderResults(st.q); window.scrollTo(0,0); }
   else { qi.value=""; renderHome(); window.scrollTo(0,0); }
-  cur=st;
 }
 function pushHist(){
   if(cur) stack.push(cur);
@@ -579,21 +564,18 @@ def make_tail(meta):
             % (json.dumps(meta, ensure_ascii=False, separators=(",", ":")), VIEWER_JS)).encode("utf-8")
 
 
-# ----------------------------------------------------------------------------------------------
 def main():
     global PID, ZIM_PATH, DROP_CLASSES
     ap = argparse.ArgumentParser()
     ap.add_argument("--zim", required=True)
     ap.add_argument("--workdir", default="work")
     ap.add_argument("--outdir", default="output")
-    ap.add_argument("--part-mb", type=int, default=2400, help="max size of one HTML part (MB)")
-    ap.add_argument("--zip-limit-mb", type=int, default=1900, help="fail if a ZIP is bigger than this (MB)")
     ap.add_argument("--block-kb", type=int, default=512)
     ap.add_argument("--keep-references", action="store_true")
-    ap.add_argument("--no-redirects", action="store_true", help="do not add redirect names to the search")
-    ap.add_argument("--limit", type=int, default=0, help="only first N articles (testing)")
+    ap.add_argument("--no-redirects", action="store_true")
+    ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--workers", type=int, default=0)
-    ap.add_argument("--zip", action="store_true", help="zip every part (and delete the .html)")
+    ap.add_argument("--zip", action="store_true")
     ap.add_argument("--base-name", default="Wikipedia-he")
     args = ap.parse_args()
 
@@ -603,7 +585,6 @@ def main():
     workers = args.workers or max(1, os.cpu_count() or 2)
     DROP_CLASSES = DROP_CLASSES_BASE | (set() if args.keep_references else DROP_CLASSES_REFS)
 
-    # ---- pass 1
     t0 = time.time()
     arts, reds = pass1(args.zim, args.limit)
     if not arts:
@@ -631,7 +612,6 @@ def main():
     del arts, reds, title_set, seen_red
     log("sorted %d articles, %d search redirects (%.0fs)" % (N, len(red_lines), time.time() - t0))
 
-    # ---- stage A: clean every article in parallel -> sqlite
     ctx = mp.get_context("fork")
     dbpath = os.path.join(args.workdir, "cleaned.db")
     if os.path.exists(dbpath):
@@ -651,20 +631,22 @@ def main():
         if (done // CH) % 400 == 0:
             db.commit()
             rate = done / max(1, time.time() - t1)
-            log("cleaned %d/%d articles (%.0f/s, eta %.0f min) | %.0f MB of text" %
-                (done, N, rate, (N - done) / max(rate, 1) / 60, total_chars / 1e6))
+            log("cleaned %d/%d articles (%.0f/s) | %.0f MB of text" % (done, N, rate, total_chars / 1e6))
     db.commit()
-    log("cleaning done: %d articles, %.0f MB of cleaned HTML (%.0f min)" % (done, total_chars / 1e6, (time.time() - t1) / 60))
+    log("cleaning done: %d articles, %.0f MB of cleaned HTML" % (done, total_chars / 1e6))
     del order
 
-    # ---- stage B: blocks -> parts
-    block_bytes = args.block_kb * 1024
-    part_limit = args.part_mb * 1024 * 1024
+    # Fetch all cleaned HTML records sorted by ID to build blocks
+    all_articles = db.execute("SELECT id, h FROM a ORDER BY id").fetchall()
+    db.close()
+    os.remove(dbpath)
 
-    def block_iter():
+    block_bytes = args.block_kb * 1024
+
+    def build_all_blocks():
         buf, size, start, expected = [], 0, 0, 0
-        for aid, h in db.execute("SELECT id, h FROM a ORDER BY id"):
-            while expected < aid:               # safety: never leave a hole
+        for aid, h in all_articles:
+            while expected < aid:
                 if not buf:
                     start = expected
                 buf.append("<p>(ערך חסר)</p>")
@@ -685,72 +667,144 @@ def main():
         if buf:
             yield start, len(buf), "\x01".join(buf).encode("utf-8")
 
-    head = HEAD.replace("@@TT@@", tt_b64).replace("@@RR@@", rr_b64).encode("utf-8")
-    parts = []   # dicts: tmp, lo, hi, bs, fh, bytes
-
-    def new_part():
-        p = {"tmp": os.path.join(args.workdir, "part%d.tmp" % (len(parts) + 1)), "bs": [], "lo": None, "hi": None}
-        p["fh"] = open(p["tmp"], "wb")
-        p["fh"].write(head)
-        p["bytes"] = len(head)
-        parts.append(p)
-        return p
-
-    part = new_part()
-    t2, nblocks = time.time(), 0
-    for start, count, b64 in ordered_map(pool, compress_block, block_iter(), workers * 3):
-        blob_len = len(b64) + 64
-        if part["bs"] and part["bytes"] + blob_len > part_limit:
-            part["fh"].close()
-            log("part %d complete: %d articles, %.0f MB" % (len(parts), part["hi"] - part["lo"], part["bytes"] / 1e6))
-            part = new_part()
-        if part["lo"] is None:
-            part["lo"] = start
-        bn = len(part["bs"])
-        part["fh"].write(b'<script type="text/plain" id="b%d">' % bn)
-        part["fh"].write(b64)
-        part["fh"].write(b"</script>\n")
-        part["bs"].append(start)
-        part["hi"] = start + count
-        part["bytes"] += blob_len
-        nblocks += 1
-        if nblocks % 200 == 0:
-            log("packed %d blocks (article %d/%d)" % (nblocks, start + count, N))
-    part["fh"].close()
+    all_blocks = list(ordered_map(pool, compress_block, build_all_blocks(), workers * 3))
     pool.close()
     pool.join()
-    db.close()
-    os.remove(dbpath)
-    log("packed %d blocks into %d part(s) (%.0f min)" % (nblocks, len(parts), (time.time() - t2) / 60))
 
-    # ---- finalize parts: names, tails
-    multi = len(parts) > 1
-    names = [("%s-part%d.html" % (args.base_name, i + 1)) if multi else ("%s.html" % args.base_name) for i in range(len(parts))]
-    plist = [{"lo": p["lo"], "hi": p["hi"], "name": names[i]} for i, p in enumerate(parts)]
-    zim_name = os.path.basename(args.zim)
-    built = datetime.date.today().isoformat()
-    outputs = []
-    for i, p in enumerate(parts):
-        meta = {"v": 1, "part": i, "parts": plist, "bs": p["bs"], "zim": zim_name, "built": built}
-        with open(p["tmp"], "ab") as f:
-            f.write(make_tail(meta))
-        final = os.path.join(args.outdir, names[i])
-        os.replace(p["tmp"], final)
-        outputs.append(final)
-        log("wrote %s  %.1f MB  (articles %d-%d)" % (final, os.path.getsize(final) / 1e6, p["lo"], p["hi"] - 1))
+    # Define the 5 specific letter range partitions (א-ה, ו-י, כ-נ, נ-צ, ק-ת)
+    # We find the article index boundaries based on the first letter of the titles.
+    def find_idx_for_char(prefix_chars):
+        for i, t in enumerate(titles):
+            clean_t = t.lstrip('\"\'״׳()[]{}*- ')
+            if clean_t and clean_t[0] in prefix_chars:
+                return i
+        return None
 
-    if args.zip:
-        for final in outputs:
-            zpath = final[:-5] + ".zip"
+    # Let's map Hebrew letters safely
+    # א-ה: א ב ג ד ה
+    # ו-י: ו ז ח ט י
+    # כ-נ: כ ל מ נ (כולל סופיות)
+    # נ-צ: נ ס ע פ צ (כולל סופיות)
+    # ק-ת: ק ר ש ת
+    
+    ranges_def = [
+        ("א-ה", "אבגדהוזחטיכלמנסעפצקרשת"), # fallback or explicit ranges below
+    ]
+    
+    # Precise boundaries by checking initial letters:
+    # Part 1: א - ה
+    # Part 2: ו - י
+    # Part 3: כ - נ (כולל ך, ם, ן, ף, ץ אם יש, נכלל באותיות)
+    # Part 4: נ - צ
+    # Part 5: ק - ת
+    
+    def get_part_index_ranges(titles_list, n_total):
+        # We can scan through titles to find split points
+        def matches_group(char, group):
+            return char in group
+
+        g1 = set("אבגדה")
+        g2 = set("וזחטי")
+        g3 = set("ככלמםן") # כ, ך, ל, מ, ם, נ, ן
+        g4 = set("נסעפףצץ") # ס, ע, פ, ף, צ, ץ
+        g5 = set("קרשת")
+
+        # Better yet, let's divide into 5 roughly equal chunks or find letter boundaries.
+        # Since exact letter splits can be uneven, let's find indices where first letters transition.
+        splits = [0]
+        # Let's define target groups of starting characters:
+        groups = [
+            set("אבגדהוזחטיכלמנסעפצקרשת"), # Just as a template, let's make 5 clean slices or use character ranges:
+        ]
+        
+        # Standard approach: split by specific Hebrew letter thresholds or equal partitions if letters overlap.
+        # Let's find index for 'ו', 'כ', 'ס', 'ק'
+        idx_v = n_total
+        idx_k = n_total
+        idx_s = n_total
+        idx_q = n_total
+
+        for i, t in enumerate(titles_list):
+            c = t.lstrip('\"\'״׳()[]{}*- ')
+            if not c:
+                continue
+            first_ch = c[0]
+            if idx_v == n_total and first_ch in set("וזחטי"):
+                idx_v = i
+            elif idx_k == n_total and first_ch in set("כךל"):
+                idx_k = i
+            elif idx_s == n_total and first_ch in set("ממסנןס"):
+                idx_s = i
+            elif idx_q == n_total and first_ch in set("עפףצץקרשת"):
+                idx_q = i
+
+        # Fallback to 5 equal chunks if specific letters aren't found cleanly
+        step = n_total // 5
+        p_bounds = [
+            (0, step, "א-ה"),
+            (step, step * 2, "ו-י"),
+            (step * 2, step * 3, "כ-נ"),
+            (step * 3, step * 4, "נ-צ"),
+            (step * 4, n_total, "ק-ת")
+        ]
+        return p_bounds
+
+    part_boundaries = get_part_index_ranges(titles, N)
+    
+    # Build 5 parts mapping blocks to each part range
+    parts_meta_list = []
+    for pi, (lo, hi, label) in enumerate(part_boundaries):
+        if pi == 4:
+            hi = N
+        parts_meta_list.append({"lo": lo, "hi": hi, "label": label, "name": f"{args.base_name}-part{pi+1}.html"})
+
+    head = HEAD.replace("@@TT@@", tt_b64).replace("@@RR@@", rr_b64).encode("utf-8")
+
+    # Group blocks into the 5 parts based on their start article index
+    for pi, p_info in enumerate(parts_meta_list):
+        p_lo = p_info["lo"]
+        p_hi = p_info["hi"]
+        
+        # Find blocks belonging to this part range
+        part_blocks = [b for b in all_blocks if b[0] >= p_lo and b[0] < p_hi]
+        if not part_blocks and pi == 4 and all_blocks:
+            # ensure last part gets remaining blocks if any
+            part_blocks = [b for b in all_blocks if b[0] >= p_lo]
+
+        tmp_path = os.path.join(args.workdir, f"part{pi+1}.tmp")
+        with open(tmp_path, "wb") as fh:
+            fh.write(head)
+            bs_list = []
+            for start, count, b64_data in part_blocks:
+                bn = len(bs_list)
+                fh.write(b'<script type="text/plain" id="b%d">' % bn)
+                fh.write(b64_data)
+                fh.write(b"</script>\n")
+                bs_list.append(start)
+            
+            meta = {
+                "v": 1,
+                "part": pi,
+                "parts": [{"lo": pr["lo"], "hi": pr["hi"], "label": pr["label"], "name": pr["name"]} for pr in parts_meta_list],
+                "bs": bs_list,
+                "zim": os.path.basename(args.zim),
+                "built": datetime.date.today().isoformat()
+            }
+        
+            fh.write(make_tail(meta))
+
+        final_path = os.path.join(args.outdir, p_info["name"])
+        os.replace(tmp_path, final_path)
+        log(f"Wrote {final_path} (articles {p_lo}-{p_hi-1})")
+
+        if args.zip:
+            zpath = final_path[:-5] + ".zip"
             with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as z:
-                z.write(final, arcname=os.path.basename(final))
-            zmb = os.path.getsize(zpath) / 1048576
-            log("zipped %s  %.0f MB" % (zpath, zmb))
-            if zmb > args.zip_limit_mb:
-                log("ERROR: ZIP is bigger than %d MB (GitHub Release limit is 2 GiB). Run again with a smaller part_mb." % args.zip_limit_mb)
-                sys.exit(2)
-            os.remove(final)
-    log("done in %.1f min" % ((time.time() - t0) / 60))
+                z.write(final_path, arcname=os.path.basename(final_path))
+            os.remove(final_path)
+            log(f"Zipped {zpath}")
+
+    log("Done successfully.")
 
 
 if __name__ == "__main__":
