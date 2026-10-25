@@ -1,0 +1,140 @@
+
+name: Website Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Website URL"
+        required: true
+        type: string
+        default: "https://darknetdiaries.com/"
+
+      include_regex:
+        description: "Optional regex to filter pages (empty = all)"
+        required: false
+        type: string
+        default: ""
+
+      block_images:
+        description: "Block images to reduce file size"
+        required: true
+        type: choice
+        options:
+          - "false"
+          - "true"
+        default: "false"
+
+      release_name:
+        description: "Release name"
+        required: true
+        type: string
+        default: "Downloaded-Website"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: website-downloader-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Chromium
+        run: npx --yes playwright install --with-deps chromium
+
+      - name: Install SingleFile
+        run: |
+          npm install --global single-file-cli
+          single-file --version
+
+      - name: Find Chromium executable
+        id: browser
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CHROME_PATH="$(find "$HOME/.cache/ms-playwright" \
+            -type f \( \
+              -path '*/chrome-linux/chrome' -o \
+              -path '*/chrome-linux64/chrome' \
+            \) -print -quit)"
+
+          if [ -z "$CHROME_PATH" ]; then
+            echo "Chromium executable not found."
+            exit 1
+          fi
+
+          echo "path=$CHROME_PATH" >> "$GITHUB_OUTPUT"
+          echo "Using Chromium: $CHROME_PATH"
+
+      - name: Crawl entire website into separate HTML files
+        shell: bash
+        env:
+          PAGE_URL: ${{ inputs.url }}
+          INCLUDE_RE: ${{ inputs.include_regex }}
+          BLOCK_IMAGES: ${{ inputs.block_images }}
+          CHROME_PATH: ${{ steps.browser.outputs.path }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p output/pages
+
+          python3 crawl_site.py \
+            --url "$PAGE_URL" \
+            --chrome "$CHROME_PATH" \
+            --out output/pages \
+            --max-pages 0 \
+            --include "$INCLUDE_RE" \
+            --block-images "$BLOCK_IMAGES" \
+            --workers 3
+
+          COUNT="$(find output/pages -maxdepth 1 -type f \
+            -name '*.html' | wc -l)"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No HTML pages were saved."
+            exit 1
+          fi
+
+          echo "Saved HTML pages: $COUNT"
+          du -sh output/pages
+
+      - name: Create ZIP containing all separate HTML pages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd output
+          zip -9 -r Website.zip pages
+
+          echo "ZIP contents:"
+          unzip -l Website.zip
+
+          echo "ZIP size:"
+          ls -lh Website.zip
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: website-${{ github.run_number }}
+          name: ${{ inputs.release_name }}
+          generate_release_notes: false
+          files: output/Website.zip
