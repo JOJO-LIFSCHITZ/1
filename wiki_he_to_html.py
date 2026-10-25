@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """
+MODE "static" (default, needs NO JavaScript - works in viewers that block JS):
+  Kiwix ZIM -> plain HTML files of ~30MB. Every file has an alphabetical index with links at the top, then the articles
+  (links between articles of the same file work; a link to an article in another file is shown as plain text).
+  File 000 is a general index: every article name (and redirect name) + the number of the file it is in.
+MODE "viewer": the old JavaScript viewer (compressed articles, search box) described below.
+
 Kiwix ZIM (Hebrew Wikipedia / Wikiquote / Hamichlol, no images)  ->  offline HTML files of ~30MB each
 that work in a plain Android "HTML viewer" (needs only JavaScript, no network, no other files).
 
@@ -585,6 +591,187 @@ def make_tail(meta):
             % (json.dumps(meta, ensure_ascii=False, separators=(",", ":")), VIEWER_JS)).encode("utf-8")
 
 
+
+# ----------------------------------------------------------------------------------------------
+# static mode: plain HTML, no JavaScript
+# ----------------------------------------------------------------------------------------------
+LINK_RE = re.compile(r'<a data-i="(\d+)">(.*?)</a>', re.S)
+BAD_FN_ALL = BAD_FN
+
+STATIC_CSS = (
+    ":root{color-scheme:light dark}"
+    "body{font-family:system-ui,Arial,sans-serif;line-height:1.7;margin:8px;overflow-wrap:anywhere}"
+    "h1{font-size:1.45em;border-bottom:1px solid #999;margin:1em 0 .4em}"
+    "h2{font-size:1.25em;border-bottom:1px solid #999;margin-top:1.3em}h3{font-size:1.1em}"
+    "a{color:#0645ad}table{border-collapse:collapse;display:block;overflow-x:auto}td,th{border:1px solid #999;padding:3px 6px}"
+    ".bar a{display:inline-block;padding:4px 9px;margin:2px;border:1px solid #999;border-radius:5px;text-decoration:none}"
+    ".t div{padding:3px 0}.n{opacity:.75;font-size:.9em}"
+    "@media (prefers-color-scheme:dark){body{background:#121212;color:#e4e4e4}a{color:#8ab4f8}}"
+)
+
+
+def fn_piece(t, maxlen=35):
+    t = BAD_FN.sub(" ", t)
+    t = re.sub(r"\s+", " ", t).strip(" .")
+    if len(t) > maxlen:
+        t = t[:maxlen].rstrip(" .")
+    return t or "_"
+
+
+def static_head(title):
+    return ('<!doctype html>\n<html lang="he" dir="rtl"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>%s</title><style>%s</style></head><body>\n' % (htmllib.escape(title), STATIC_CSS))
+
+
+def letter_groups(keys):
+    """keys: list of strings (already in sorted order) -> list of (char, first_position)."""
+    out, last = [], None
+    for pos, k in enumerate(keys):
+        c = (k[:1] or "?").upper()
+        if c != last:
+            out.append((c, pos))
+            last = c
+    return out
+
+
+def build_static(args, db, titles, red_lines, N):
+    import bisect
+    part_limit = args.part_mb * 1024 * 1024
+    hard_limit = args.hard_mb * 1024 * 1024
+
+    # ---- boundaries of the parts (by size of the cleaned html)
+    parts, cur = [], None
+    for aid, ln in db.execute("SELECT id, length(CAST(h AS BLOB)) FROM a ORDER BY id"):
+        cost = ln + len(titles[aid].encode("utf-8")) * 2 + 260
+        if cur is None or (cur["size"] + cost > part_limit and cur["hi"] > cur["lo"]):
+            cur = {"lo": aid, "hi": aid, "size": 20000}
+            parts.append(cur)
+        cur["hi"] = aid + 1
+        cur["size"] += cost
+    K = len(parts)
+    width = max(3, len(str(K)))
+    names = ["%0*d_%s - %s.html" % (width, i + 1, fn_piece(titles[p["lo"]]), fn_piece(titles[p["hi"] - 1]))
+             for i, p in enumerate(parts)]
+    los = [p["lo"] for p in parts]
+    log("static mode: %d articles -> %d file(s)" % (N, K))
+
+    outputs = []
+
+    # ---- the content files
+    for i, p in enumerate(parts):
+        lo, hi = p["lo"], p["hi"]
+        path = os.path.join(args.outdir, names[i])
+
+        def sub_link(m, lo=lo, hi=hi):
+            t = int(m.group(1))
+            return '<a href="#a%d">%s</a>' % (t, m.group(2)) if lo <= t < hi else m.group(2)
+
+        keys = [titles[j].lower() for j in range(lo, hi)]
+        groups = letter_groups(keys)
+        with open(path, "w", encoding="utf-8") as out:
+            out.write(static_head("%s - חלק %d: %s - %s" % (args.title, i + 1, titles[lo], titles[hi - 1])))
+            out.write('<h1 id="top">%s - חלק %d מתוך %d</h1>' % (htmllib.escape(args.title), i + 1, K))
+            out.write('<p>ערכים: <b>%s</b> עד <b>%s</b> (%d ערכים). קישור לערך שנמצא בקובץ אחר אינו פעיל - '
+                      'חפש את שם הערך בקובץ <b>%s</b> כדי לדעת באיזה קובץ הוא נמצא.</p>'
+                      % (htmllib.escape(titles[lo]), htmllib.escape(titles[hi - 1]), hi - lo, "000_אינדקס כללי"))
+            out.write('<div class="bar">%s</div>' % "".join(
+                '<a href="#g%d">%s</a>' % (gi, htmllib.escape(c)) for gi, (c, _) in enumerate(groups)))
+            out.write('<div class="t">')
+            gi = 0
+            for pos in range(hi - lo):
+                if gi < len(groups) and groups[gi][1] == pos:
+                    out.write('<h2 id="g%d">%s</h2>' % (gi, htmllib.escape(groups[gi][0])))
+                    gi += 1
+                out.write('<div><a href="#a%d">%s</a></div>' % (lo + pos, htmllib.escape(titles[lo + pos])))
+            out.write("</div><hr>\n")
+            for aid, h in db.execute("SELECT id, h FROM a WHERE id>=? AND id<? ORDER BY id", (lo, hi)):
+                out.write('<h1 id="a%d">%s</h1>%s<p><a href="#top">&#8593; לראש הקובץ (אינדקס)</a></p><hr>\n'
+                          % (aid, htmllib.escape(titles[aid]), LINK_RE.sub(sub_link, h)))
+            out.write("</body></html>\n")
+        size = os.path.getsize(path)
+        outputs.append(path)
+        log("wrote %s  %.1f MB  (articles %d-%d)%s" % (names[i], size / 1e6, lo, hi - 1,
+            "  WARNING: bigger than %d MB" % args.hard_mb if size > hard_limit else ""))
+
+    # ---- the general index (name -> number of the file)
+    def pnum(aid):
+        return bisect.bisect_right(los, aid)
+
+    entries = [(titles[j].lower(), htmllib.escape(titles[j]), pnum(j)) for j in range(N)]
+    if not args.no_redirects:
+        for lname, name, tid in red_lines:
+            entries.append((lname, "%s &#8592; %s" % (htmllib.escape(name), htmllib.escape(titles[tid])), pnum(tid)))
+    entries.sort(key=lambda e: e[0])
+    del red_lines
+
+    idx_chunks, cur, size = [], [], 0
+    for e in entries:
+        cur.append(e)
+        size += len(e[1].encode("utf-8")) + 40
+        if size >= part_limit - 200000:
+            idx_chunks.append(cur)
+            cur, size = [], 0
+    if cur:
+        idx_chunks.append(cur)
+    table = "".join('<div>%0*d &#8594; %s</div>' % (width, i + 1, htmllib.escape(names[i][:-5])) for i in range(K))
+    for ci, chunk in enumerate(idx_chunks):
+        iname = "000_אינדקס כללי.html" if len(idx_chunks) == 1 else "000_אינדקס כללי %d.html" % (ci + 1)
+        path = os.path.join(args.outdir, iname)
+        groups = letter_groups([e[0] for e in chunk])
+        with open(path, "w", encoding="utf-8") as out:
+            out.write(static_head("%s - אינדקס כללי" % args.title))
+            out.write('<h1>%s - אינדקס כללי%s</h1>' % (htmllib.escape(args.title),
+                      (" (חלק %d מתוך %d)" % (ci + 1, len(idx_chunks))) if len(idx_chunks) > 1 else ""))
+            out.write('<p>חפש כאן שם של ערך (חיפוש בדף של האפליקציה). ליד כל ערך מופיע <b>מספר הקובץ</b> שבו הוא נמצא. '
+                      'שם עם חץ (&#8592;) הוא שם חלופי שמפנה לערך.</p>')
+            out.write('<div class="bar">%s</div>' % "".join(
+                '<a href="#g%d">%s</a>' % (gi, htmllib.escape(c)) for gi, (c, _) in enumerate(groups)))
+            out.write('<details><summary>רשימת הקבצים</summary><div class="t">%s</div></details>' % table)
+            out.write('<div class="t">')
+            gi = 0
+            for pos, e in enumerate(chunk):
+                if gi < len(groups) and groups[gi][1] == pos:
+                    out.write('<h2 id="g%d">%s</h2>' % (gi, htmllib.escape(groups[gi][0])))
+                    gi += 1
+                out.write('<div>%s <b>[%0*d]</b></div>' % (e[1], width, e[2]))
+            out.write("</div></body></html>\n")
+        outputs.insert(ci, path)
+        log("wrote %s  %.1f MB" % (iname, os.path.getsize(path) / 1e6))
+    return outputs
+
+
+def zip_outputs(args, outputs, t0):
+    if args.zip:
+        zip_limit = args.zip_limit_mb * 1024 * 1024
+        zi, z, zpath, zc, last_c = 0, None, None, 0, 0
+        zips = []
+        for final in outputs:
+            if z is not None and zc + last_c * 1.2 > zip_limit:
+                z.close()
+                z = None
+            if z is None:
+                zi += 1
+                zpath = os.path.join(args.outdir, "%s-zip%02d.zip" % (args.base_name, zi))
+                z = zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True)
+                zips.append(zpath)
+                zc = 0
+            z.write(final, arcname=os.path.basename(final))
+            last_c = z.infolist()[-1].compress_size
+            zc += last_c
+            os.remove(final)
+        if z is not None:
+            z.close()
+        for zpath in zips:
+            zmb = os.path.getsize(zpath) / 1048576
+            log("zipped %s  %.0f MB" % (os.path.basename(zpath), zmb))
+            if zmb > 1990:
+                log("ERROR: ZIP is bigger than 1990 MB (GitHub Release limit is 2 GiB). Run again with a smaller --zip-limit-mb.")
+                sys.exit(2)
+    log("done in %.1f min" % ((time.time() - t0) / 60))
+
+
+
 # ----------------------------------------------------------------------------------------------
 def main():
     global PID, ZIM_PATH, DROP_CLASSES
@@ -595,6 +782,8 @@ def main():
     ap.add_argument("--part-mb", type=int, default=30, help="target size of one HTML file (MB); a file may go a bit over")
     ap.add_argument("--hard-mb", type=int, default=32, help="warn if an HTML file is bigger than this (MB)")
     ap.add_argument("--zip-limit-mb", type=int, default=1800, help="start a new ZIP when the current one reaches about this size (MB)")
+    ap.add_argument("--mode", choices=["static", "viewer"], default="static",
+                    help="static = plain HTML without JavaScript (default); viewer = JavaScript viewer with search box")
     ap.add_argument("--title", default="ויקיפדיה העברית", help="name shown inside the viewer")
     ap.add_argument("--block-kb", type=int, default=512)
     ap.add_argument("--keep-references", action="store_true")
@@ -661,6 +850,15 @@ def main():
     db.commit()
     log("cleaning done: %d articles, %.0f MB of cleaned HTML (%.0f min)" % (done, total_chars / 1e6, (time.time() - t1) / 60))
     del order
+
+    if args.mode == "static":
+        pool.close()
+        pool.join()
+        outputs = build_static(args, db, titles, red_lines, N)
+        db.close()
+        os.remove(dbpath)
+        zip_outputs(args, outputs, t0)
+        return
 
     # ---- stage B: blocks -> parts (~part-mb each)
     block_bytes = args.block_kb * 1024
@@ -782,34 +980,7 @@ def main():
         log("wrote %s  %.1f MB  (articles %d-%d)%s" % (names[i], size / 1e6, lo, hi - 1,
             "  WARNING: bigger than %d MB" % args.hard_mb if size > hard_limit else ""))
 
-    if args.zip:
-        zip_limit = args.zip_limit_mb * 1024 * 1024
-        zi, z, zpath, zc, last_c = 0, None, None, 0, 0
-        zips = []
-        for final in outputs:
-            if z is not None and zc + last_c * 1.2 > zip_limit:
-                z.close()
-                z = None
-            if z is None:
-                zi += 1
-                zpath = os.path.join(args.outdir, "%s-zip%02d.zip" % (args.base_name, zi))
-                z = zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True)
-                zips.append(zpath)
-                zc = 0
-            z.write(final, arcname=os.path.basename(final))
-            last_c = z.infolist()[-1].compress_size
-            zc += last_c
-            os.remove(final)
-        if z is not None:
-            z.close()
-        for zpath in zips:
-            zmb = os.path.getsize(zpath) / 1048576
-            log("zipped %s  %.0f MB" % (os.path.basename(zpath), zmb))
-            if zmb > 1990:
-                log("ERROR: ZIP is bigger than 1990 MB (GitHub Release limit is 2 GiB). Run again with a smaller --zip-limit-mb.")
-                sys.exit(2)
-    log("done in %.1f min" % ((time.time() - t0) / 60))
-
+    zip_outputs(args, outputs, t0)
 
 if __name__ == "__main__":
     main()
