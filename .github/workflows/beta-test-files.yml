@@ -1,0 +1,38 @@
+name: Beta - test HTML files (30 / 50 / 70 MB)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  beta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: pip install lxml
+
+      - name: Build the 3 test files
+        run: |
+          set -euo pipefail
+          python3 make_beta_files.py --outdir output_beta
+          ls -lh output_beta
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: beta-${{ github.run_number }}
+          name: Beta - קבצי בדיקה 30/50/70MB (${{ github.run_number }})
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          files: output_beta/*.html
