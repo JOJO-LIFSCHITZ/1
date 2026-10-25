@@ -1,0 +1,131 @@
+name: Hebrew Wikipedia to HTML
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "ZIM type: nopic = full articles without images, mini = only the intro of each article (small, good for a first test)"
+        required: true
+        type: choice
+        options:
+          - nopic
+          - mini
+        default: nopic
+
+      zim_url:
+        description: "Optional: direct URL of a .zim file (leave empty = newest from download.kiwix.org)"
+        required: false
+        type: string
+        default: ""
+
+      part_mb:
+        description: "Max size of one HTML part in MB. Above this the output is split to several ZIPs. (2400 -> every ZIP stays under the 2GB Release limit)"
+        required: true
+        type: string
+        default: "2400"
+
+      keep_references:
+        description: "Keep the footnotes/references list (bigger file)"
+        required: true
+        type: choice
+        options:
+          - "false"
+          - "true"
+        default: "false"
+
+      limit:
+        description: "Optional: only the first N articles (for testing, e.g. 5000). Empty = all"
+        required: false
+        type: string
+        default: ""
+
+      release_name:
+        description: "Release name"
+        required: true
+        type: string
+        default: "Hebrew-Wikipedia-Offline"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wikipedia-he-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: pip install libzim lxml
+
+      - name: Find and download the ZIM file
+        env:
+          VARIANT: ${{ inputs.variant }}
+          ZIM_URL: ${{ inputs.zim_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p work output
+          if [ -z "$ZIM_URL" ]; then
+            ZIM_URL="$(python3 - <<'PY'
+          import os, re, sys, urllib.request
+          variant = os.environ["VARIANT"]
+          base = "https://download.kiwix.org/zim/wikipedia/"
+          req = urllib.request.Request(base, headers={"User-Agent": "Mozilla/5.0"})
+          html = urllib.request.urlopen(req, timeout=60).read().decode("utf-8", "replace")
+          found = re.findall(r'wikipedia_he_all_%s_(\d{4}-\d{2})\.zim' % re.escape(variant), html)
+          if not found:
+              sys.stderr.write("No wikipedia_he_all_%s_*.zim in %s - pass zim_url manually (see library.kiwix.org)\n" % (variant, base))
+              sys.exit(1)
+          print(base + "wikipedia_he_all_%s_%s.zim" % (variant, max(found)))
+          PY
+          )"
+          fi
+          echo "ZIM URL: $ZIM_URL"
+          curl -fL --retry 10 --retry-delay 15 --retry-all-errors -C - -o work/he.zim "$ZIM_URL"
+          ls -lh work/he.zim
+          test "$(stat -c %s work/he.zim)" -gt 10000000
+          df -h /
+
+      - name: Build offline HTML (and split + zip if needed)
+        env:
+          PART_MB: ${{ inputs.part_mb }}
+          KEEP_REFS: ${{ inputs.keep_references }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          set -euo pipefail
+          EXTRA=""
+          if [ "$KEEP_REFS" = "true" ]; then EXTRA="$EXTRA --keep-references"; fi
+          if [ -n "$LIMIT" ]; then EXTRA="$EXTRA --limit $LIMIT"; fi
+          python3 wiki_he_to_html.py \
+            --zim work/he.zim \
+            --workdir work/tmp \
+            --outdir output \
+            --part-mb "$PART_MB" \
+            --zip $EXTRA
+          ls -lh output
+          df -h /
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: wikipedia-he-${{ github.run_number }}
+          name: ${{ inputs.release_name }}
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          files: output/*.zip
