@@ -16,10 +16,11 @@ on:
         default: true
 
       hamichlol_zim_url:
-        description: "Hamichlol: URL of the .zim file OR of the download page (it is opened with Chrome). Empty = skip Hamichlol"
+        description: "Hamichlol ZIM direct download URL"
         required: false
         type: string
-        default: ""
+        default: "https://dev.hamichlol.org.il/w/upload/michlol/hamichlol_he_zimnew_novid_2026-03.zim"
+        
 
       variant:
         description: "Wikipedia ZIM type: nopic = full articles without images, mini = only the intro of each article (small, good for a first test)"
