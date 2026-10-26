@@ -1,0 +1,44 @@
+name: Build and Release Otzarya HTML
+
+on:
+  workflow_dispatch: # מאפשר להפעיל את התהליך ידנית בלחיצת כפתור (Actions -> Run workflow)
+  schedule:
+    - cron: '0 3 1 * *' # רץ אוטומטית פעם בחודש (ב-1 לחודש ב-03:00 בלילה) לבדיקת עדכונים
+
+permissions:
+  contents: write # נותן ל-Workflow הרשאה ליצור Release ולהעלות קבצים
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Book Scraper and Builder
+        run: |
+          python build_books.py --outdir output --workdir work
+
+      - name: Generate Release Tag
+        id: vars
+        run: |
+          echo "tag=$(date +'%Y-%m-%d_%H-%M')" >> $GITHUB_OUTPUT
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release and Upload ZIPs
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v-${{ steps.vars.outputs.tag }}"
+          name: "Otzarya HTML Offline Books (${{ steps.vars.outputs.date }})"
+          body: |
+            גרסה מעודכנת של ספרי אוצריא מותאמים לקריאה אופליין בפורמט HTML.
+            הספרים מסודרים לפי סדר האלף-בית העברי ומחולקים לקבצים נוחים לקריאה.
+          files: output/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
