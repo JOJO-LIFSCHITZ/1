@@ -1,0 +1,26 @@
+name: Build Micropedia Talmudit
+
+on:
+  workflow_dispatch: # מאפשר הפעלה ידנית בלחיצת כפתור
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          
+      - name: Run Scraper
+        run: python yeshiva_scraper.py
+        
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Micropedia-Talmudit-ZIP
+          path: output/Micropedia-Talmudit.zip
