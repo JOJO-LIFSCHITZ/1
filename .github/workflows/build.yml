@@ -1,7 +1,11 @@
 name: Build Micropedia Talmudit
 
 on:
-  workflow_dispatch: # מאפשר הפעלה ידנית בלחיצת כפתור
+  workflow_dispatch:
+
+# חובה לתת הרשאה לגיטהאב ליצור Release
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -19,8 +23,9 @@ jobs:
       - name: Run Scraper
         run: python yeshiva_scraper.py
         
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: Micropedia-Talmudit-ZIP
-          path: output/Micropedia-Talmudit.zip
+          tag_name: micropedia-${{ github.run_number }}
+          name: "מיקרופדיה תלמודית - HTML לא מקוון (${{ github.run_number }})"
+          files: output/Micropedia-Talmudit.zip
