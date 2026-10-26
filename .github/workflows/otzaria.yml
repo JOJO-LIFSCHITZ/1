@@ -1,0 +1,30 @@
+name: Build Full Otzaria HTML
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          
+      - name: Run Converter
+        run: python otzaria_library_to_html.py --zip-limit-mb 1800
+        
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: otzaria-html-${{ github.run_number }}
+          name: "ספריית אוצריא המלאה - HTML לא מקוון (${{ github.run_number }})"
+          files: output/*.zip
