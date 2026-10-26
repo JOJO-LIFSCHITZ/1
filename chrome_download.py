@@ -36,27 +36,36 @@ def main():
             except Exception:
                 pass
             print("page title:", page.title())
-            links = page.eval_on_selector_all(
-                "a[href]", "els => els.map(e => [e.href, (e.innerText||'').trim()])")
-            cand = [l for l in links if ".zim" in l[0].lower()]
-            if not cand:
-                cand = [l for l in links if any(w in l[1] for w in ("הורד", "הורדה", "Download", "download"))]
-            print("candidate links:", cand[:5])
-            if not cand:
-                print("ERROR: no download link found on the page")
-                sys.exit(1)
-            target = cand[0][0]
-            try:
+            
+            # ---> הוספה: זיהוי ולחיצה על כפתור "Download anyway" של גוגל דרייב <---
+            if page.locator("#uc-download-link").count() > 0:
+                print("Found Google Drive download warning button. Clicking it...")
                 with page.expect_download(timeout=120000) as di:
-                    try:
-                        page.goto(target, wait_until="commit")
-                    except Exception as ex:
-                        print("goto:", str(ex)[:120])
+                    page.locator("#uc-download-link").click()
                 dl = di.value
-            except Exception:
-                with page.expect_download(timeout=120000) as di:
-                    page.click('a[href="%s"]' % cand[0][0].replace('"', '\\"'))
-                dl = di.value
+            else:
+                # הגיבוי הרגיל לאתרים אחרים (חיפוש קישור עם .zim או המילה הורדה)
+                links = page.eval_on_selector_all(
+                    "a[href]", "els => els.map(e => [e.href, (e.innerText||'').trim()])")
+                cand = [l for l in links if ".zim" in l[0].lower()]
+                if not cand:
+                    cand = [l for l in links if any(w in l[1] for w in ("הורד", "הורדה", "Download", "download"))]
+                print("candidate links:", cand[:5])
+                if not cand:
+                    print("ERROR: no download link found on the page")
+                    sys.exit(1)
+                target = cand[0][0]
+                try:
+                    with page.expect_download(timeout=120000) as di:
+                        try:
+                            page.goto(target, wait_until="commit")
+                        except Exception as ex:
+                            print("goto:", str(ex)[:120])
+                    dl = di.value
+                except Exception:
+                    with page.expect_download(timeout=120000) as di:
+                        page.click('a[href="%s"]' % cand[0][0].replace('"', '\\"'))
+                    dl = di.value
 
         print("downloading:", dl.suggested_filename)
         dl.save_as(out)
