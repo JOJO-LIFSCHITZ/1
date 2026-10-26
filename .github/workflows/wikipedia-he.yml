@@ -16,7 +16,7 @@ on:
         default: true
 
       hamichlol_zim_url:
-        description: "Hamichlol: direct URL of the .zim file (from the Hamichlol download page). Empty = skip Hamichlol"
+        description: "Hamichlol: URL of the .zim file OR of the download page (it is opened with Chrome). Empty = skip Hamichlol"
         required: false
         type: string
         default: ""
@@ -43,10 +43,10 @@ on:
         default: ""
 
       part_mb:
-        description: "Target size of every HTML file in MB (a file may go a little over, up to ~32)"
+        description: "Target size of every HTML file in MB (a file may go a little over). If it does not work, try 5"
         required: true
         type: string
-        default: "30"
+        default: "10"
 
       keep_references:
         description: "Keep the footnotes/references list (bigger files)"
@@ -126,6 +126,12 @@ jobs:
       - name: Install Python packages
         run: pip install libzim lxml
 
+      - name: Install Chrome (Hamichlol only)
+        if: matrix.source == 'hamichlol'
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
       - name: Find and download the ZIM file
         env:
           SOURCE: ${{ matrix.source }}
@@ -166,12 +172,19 @@ jobs:
           )"
           fi
           echo "ZIM URL: $ZIM_URL"
-          curl -fL --retry 10 --retry-delay 15 --retry-all-errors -C - -A "Mozilla/5.0" -o work/src.zim "$ZIM_URL"
+          if [ "$SOURCE" = "hamichlol" ]; then
+            # Hamichlol blocks plain curl: open it through a real Chrome, which then downloads the file
+            python3 chrome_download.py "$ZIM_URL" work/src.zim
+          else
+            curl -fL --retry 10 --retry-delay 15 --retry-all-errors -C - -A "Mozilla/5.0" -o work/src.zim "$ZIM_URL"
+          fi
           ls -lh work/src.zim
           test "$(stat -c %s work/src.zim)" -gt 1000000
+          # a real ZIM file starts with the bytes 5a 49 4d 04
+          test "$(head -c 4 work/src.zim | od -An -tx1 | tr -d ' \n')" = "5a494d04"
           df -h /
 
-      - name: Build offline HTML (30MB parts, named by first and last article)
+      - name: Build offline HTML (one folder per letter, files by size, named by first and last article)
         env:
           PART_MB: ${{ inputs.part_mb }}
           KEEP_REFS: ${{ inputs.keep_references }}
