@@ -116,31 +116,37 @@ def get_json(params):
         return json.loads(response.read().decode('utf-8'))
 
 def get_micropedia_titles():
+    target_namespaces = ["מיקרופדיה תלמודית", "אנציקלופדיה תלמודית"]
+    
+    # בדיקת מזהי מרחבי השם (Namespaces) באתר
     res = get_json({'action': 'query', 'meta': 'siteinfo', 'siprop': 'namespaces', 'format': 'json'})
-    ns_id = None
+    ns_map = {}
     if 'query' in res and 'namespaces' in res['query']:
         for k, v in res['query']['namespaces'].items():
-            if v.get('*') == 'מיקרופדיה תלמודית':
-                ns_id = k
-                break
+            name = v.get('*')
+            if name in target_namespaces:
+                ns_map[name] = k
     
     titles = []
-    if ns_id is not None:
-        params = {'action': 'query', 'list': 'allpages', 'apnamespace': ns_id, 'aplimit': 'max', 'format': 'json'}
-    else:
-        params = {'action': 'query', 'list': 'allpages', 'apprefix': 'מיקרופדיה תלמודית:', 'apnamespace': 0, 'aplimit': 'max', 'format': 'json'}
-        
-    while True:
-        res = get_json(params)
-        if 'query' in res and 'allpages' in res['query']:
-            for page in res['query']['allpages']:
-                titles.append(page['title'])
-        
-        if 'continue' in res:
-            params.update(res['continue'])
+    for name in target_namespaces:
+        log(f"Fetching list for namespace: {name}...")
+        ns_id = ns_map.get(name)
+        if ns_id is not None:
+            params = {'action': 'query', 'list': 'allpages', 'apnamespace': ns_id, 'aplimit': 'max', 'format': 'json'}
         else:
-            break
+            params = {'action': 'query', 'list': 'allpages', 'apprefix': f'{name}:', 'apnamespace': 0, 'aplimit': 'max', 'format': 'json'}
             
+        while True:
+            r = get_json(params)
+            if 'query' in r and 'allpages' in r['query']:
+                for page in r['query']['allpages']:
+                    titles.append(page['title'])
+            
+            if 'continue' in r:
+                params.update(r['continue'])
+            else:
+                break
+                
     return titles
 
 def get_article_html(title):
@@ -181,11 +187,16 @@ def build_db(args):
     titles_raw = get_micropedia_titles()
     log(f"Found {len(titles_raw)} articles! Starting fast download (this may take 1-2 minutes)...")
     
-    clean_titles = []
+clean_titles = []
     title_map = {}
     for t in titles_raw:
-        # חיתוך המילה "מיקרופדיה תלמודית:" משם הערך
-        clean_name = t.replace('מיקרופדיה תלמודית:', '').strip()
+        # הסרת הקידומות של שני מרחבי השם
+        clean_name = t.replace('מיקרופדיה תלמודית:', '').replace('אנציקלופדיה תלמודית:', '').strip()
+        
+        # מניעת דריסה אם במקרה יש ערך כפול בשני המרחבים
+        if clean_name in title_map:
+            clean_name = f"{clean_name} (אנציקלופדיה)"
+            
         clean_titles.append(clean_name)
         title_map[clean_name] = t
         
