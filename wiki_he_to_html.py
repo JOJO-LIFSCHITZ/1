@@ -1,32 +1,21 @@
 #!/usr/bin/env python3
 """
-MODE "static" (default, needs NO JavaScript - works in viewers that block JS):
-  Kiwix ZIM -> plain HTML files of ~30MB. Every file has an alphabetical index with links at the top, then the articles
-  (links between articles of the same file work; a link to an article in another file is shown as plain text).
-  File 000 is a general index: every article name (and redirect name) + the number of the file it is in.
-MODE "viewer": the old JavaScript viewer (compressed articles, search box) described below.
+Kiwix ZIM (Hebrew Wikipedia / Wikiquote / Hamichlol, no images)  ->  plain offline HTML files (NO JavaScript needed).
 
-Kiwix ZIM (Hebrew Wikipedia / Wikiquote / Hamichlol, no images)  ->  offline HTML files of ~30MB each
-that work in a plain Android "HTML viewer" (needs only JavaScript, no network, no other files).
-
-How the output works
-  * every article is cleaned (no images/scripts/navboxes), links are rewritten to article numbers
-  * articles are packed (alphabetical order) into blocks of ~512KB, each block is deflate-compressed + base64
-  * the HTML contains a small viewer (search, alphabetical browse, random, back, font size) + all blocks
-  * a block is decompressed only when needed, so the viewer does not decompress the whole encyclopedia
-  * the output is split into parts of ~30MB (soft limit, may reach ~32MB); articles stay in alphabetical order,
-    and every file is named after the first and last article it contains
-  * every part is a complete standalone viewer with its own search / browse index (only its own articles);
-    a link to an article that sits in another part tells you which file to open
-  * parts are grouped into ZIPs (ASCII names, so GitHub keeps the name); the Hebrew file names live inside the ZIP
+Output layout
+  * one folder per first letter (22 Hebrew letters; "אחר" is created only if there are articles that start
+    with a digit / English / symbol), and inside it all the HTML files of that letter
+  * every HTML file is ~part-mb MB; it is named after the first and the last article it contains
+  * every file starts with a sticky top bar: jump to the start of the title list, or to 25% / 50% / 75% / 100%
+    of the titles (the titles list, not the articles themselves), then the alphabetical list of titles, then the articles
+  * links between articles of the same file work; a link to an article in another file is shown as plain text
+  * every folder has 000_אינדקס.html: every article name (and redirect name) of that letter + the number of the file
+  * everything is packed into ONE zip; only if it would be bigger than ~1.99GB it is split into several zips
 """
 import argparse
-import base64
 import collections
-import datetime
 import html as htmllib
 import itertools
-import json
 import multiprocessing as mp
 import os
 import posixpath
@@ -35,7 +24,6 @@ import sqlite3
 import sys
 import time
 import zipfile
-import zlib
 from urllib.parse import unquote
 
 import lxml.html
@@ -199,29 +187,6 @@ def work(chunk):
     return out
 
 
-def compress_block(args):
-    start, count, payload = args
-    co = zlib.compressobj(9, zlib.DEFLATED, -15)
-    z = co.compress(payload) + co.flush()
-    return start, count, base64.b64encode(z)
-
-
-def ordered_map(pool, func, it, window):
-    pending = collections.deque()
-    for item in it:
-        pending.append(pool.apply_async(func, (item,)))
-        if len(pending) >= window:
-            yield pending.popleft().get()
-    while pending:
-        yield pending.popleft().get()
-
-
-def deflate_b64(text):
-    co = zlib.compressobj(9, zlib.DEFLATED, -15)
-    z = co.compress(text.encode("utf-8")) + co.flush()
-    return base64.b64encode(z).decode("ascii")
-
-
 # ----------------------------------------------------------------------------------------------
 # pass 1: titles + redirects
 # ----------------------------------------------------------------------------------------------
@@ -251,363 +216,48 @@ def pass1(zim, limit):
 
 
 # ----------------------------------------------------------------------------------------------
-# viewer (HTML head / tail)
-# ----------------------------------------------------------------------------------------------
-HEAD = r'''<!doctype html>
-<html lang="he" dir="rtl"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>@@TITLE@@</title>
-<style>
-:root{--bg:#fff;--fg:#1b1b1b;--mut:#666;--bar:#202124;--lk:#0645ad;--bd:#c8ccd1;--hl:#f2f4f8}
-@media (prefers-color-scheme:dark){:root{--bg:#121212;--fg:#e4e4e4;--mut:#9aa0a6;--bar:#000;--lk:#8ab4f8;--bd:#3c4043;--hl:#1e1f22}}
-html{font-size:17px;-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;line-height:1.75}
-#bar{position:sticky;top:0;z-index:9;display:flex;gap:4px;align-items:center;padding:6px;background:var(--bar)}
-#bar button{font-size:18px;min-width:38px;height:38px;border:0;border-radius:6px;background:#3c4043;color:#fff;padding:0 6px}
-#q{flex:1;min-width:0;height:38px;font-size:16px;border:0;border-radius:6px;padding:0 10px;box-sizing:border-box}
-#main{padding:10px 14px 70px;max-width:900px;margin:0 auto;overflow-wrap:anywhere}
-h1.at{font-size:1.6rem;line-height:1.3;border-bottom:1px solid var(--bd);padding-bottom:6px;margin:.3em 0}
-.art h2{font-size:1.35rem;border-bottom:1px solid var(--bd);margin-top:1.4em}
-.art h3{font-size:1.15rem}
-.art a[data-i]{color:var(--lk);cursor:pointer}
-.art table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:8px 0}
-.art td,.art th{border:1px solid var(--bd);padding:4px 8px;vertical-align:top}
-.art th{background:var(--hl)}
-.r{padding:11px 6px;border-bottom:1px solid var(--bd);color:var(--lk);cursor:pointer}
-.r small{color:var(--mut)}
-.box{background:var(--hl);border:1px solid var(--bd);border-radius:8px;padding:10px 14px;margin:10px 0}
-button.act{font-size:16px;padding:8px 14px;margin:4px 0 4px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--hl);color:var(--fg)}
-input.jmp{font-size:16px;padding:7px;width:9em;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}
-</style></head><body>
-<div id="bar">
-<button id="bk" title="חזרה">&#8594;</button><button id="hm" title="בית">&#8962;</button>
-<button id="rn" title="ערך אקראי">&#127922;</button><button id="br" title="דפדוף">&#9776;</button>
-<input id="q" type="search" placeholder="חיפוש ערך..." autocomplete="off">
-<button id="f1" title="גדול">A+</button><button id="f2" title="קטן">A-</button>
-</div>
-<div id="main"><p>טוען את המילון... (בקובץ גדול זה יכול לקחת כמה שניות)</p></div>
-<script type="text/plain" id="tt">@@TT@@</script>
-<script type="text/plain" id="rr">@@RR@@</script>
-'''
-
-VIEWER_JS = r'''
-(function(){
-"use strict";
-function $(i){return document.getElementById(i);}
-var LBASE=[3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
-var LEXT=[0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
-var DBASE=[1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
-var DEXT=[0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
-var CLORD=[16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
-
-function inflate(src){
-  var pos=0,bitbuf=0,bitcnt=0,out=new Uint8Array(Math.max(1024,src.length*4)),op=0;
-  function bits(n){
-    var val=bitbuf;
-    while(bitcnt<n){ if(pos>=src.length) throw new Error("eof"); val|=src[pos++]<<bitcnt; bitcnt+=8; }
-    bitbuf=val>>>n; bitcnt-=n;
-    return val&((1<<n)-1);
-  }
-  function need(n){
-    if(n>out.length){ var s=out.length*2; while(s<n) s*=2; var o=new Uint8Array(s); o.set(out.subarray(0,op)); out=o; }
-  }
-  function construct(lengths,off,n){
-    var count=new Uint16Array(16),symbol=new Uint16Array(n),offs=new Uint16Array(16),i;
-    for(i=0;i<n;i++) count[lengths[off+i]]++;
-    offs[1]=0;
-    for(i=1;i<15;i++) offs[i+1]=offs[i]+count[i];
-    for(i=0;i<n;i++) if(lengths[off+i]!==0) symbol[offs[lengths[off+i]]++]=i;
-    return {count:count,symbol:symbol};
-  }
-  function decode(h){
-    var code=0,first=0,index=0,len,c;
-    for(len=1;len<=15;len++){
-      code|=bits(1);
-      c=h.count[len];
-      if(code-c<first) return h.symbol[index+(code-first)];
-      index+=c; first+=c; first<<=1; code<<=1;
-    }
-    throw new Error("bad code");
-  }
-  function codes(lc,dc){
-    var sym,len,dist;
-    for(;;){
-      sym=decode(lc);
-      if(sym<256){ if(op>=out.length) need(op+1); out[op++]=sym; }
-      else if(sym===256){ return; }
-      else{
-        sym-=257; if(sym>=29) throw new Error("bad len");
-        len=LBASE[sym]+bits(LEXT[sym]);
-        sym=decode(dc); dist=DBASE[sym]+bits(DEXT[sym]);
-        if(dist>op) throw new Error("bad dist");
-        need(op+len);
-        while(len--){ out[op]=out[op-dist]; op++; }
-      }
-    }
-  }
-  var fixedL=null,fixedD=null;
-  var last,type,i,len,l2;
-  do{
-    last=bits(1); type=bits(2);
-    if(type===0){
-      bitbuf=0; bitcnt=0;
-      len=src[pos]|(src[pos+1]<<8); pos+=4;
-      need(op+len);
-      for(i=0;i<len;i++) out[op++]=src[pos++];
-    }else if(type===1){
-      if(!fixedL){
-        l2=new Uint8Array(320);
-        for(i=0;i<144;i++) l2[i]=8;
-        for(;i<256;i++) l2[i]=9;
-        for(;i<280;i++) l2[i]=7;
-        for(;i<288;i++) l2[i]=8;
-        fixedL=construct(l2,0,288);
-        for(i=0;i<30;i++) l2[i]=5;
-        fixedD=construct(l2,0,30);
-      }
-      codes(fixedL,fixedD);
-    }else if(type===2){
-      var nlen=bits(5)+257,ndist=bits(5)+1,ncode=bits(4)+4,lengths=new Uint8Array(320),sym,idx=0,lc,dc,rep,prev;
-      for(i=0;i<ncode;i++) lengths[CLORD[i]]=bits(3);
-      lc=construct(lengths,0,19);
-      lengths=new Uint8Array(320);
-      while(idx<nlen+ndist){
-        sym=decode(lc);
-        if(sym<16){ lengths[idx++]=sym; }
-        else{
-          prev=0;
-          if(sym===16){ prev=lengths[idx-1]; rep=3+bits(2); }
-          else if(sym===17){ rep=3+bits(3); }
-          else{ rep=11+bits(7); }
-          while(rep--) lengths[idx++]=prev;
-        }
-      }
-      lc=construct(lengths,0,nlen);
-      dc=construct(lengths,nlen,ndist);
-      codes(lc,dc);
-    }else throw new Error("bad block");
-  }while(!last);
-  return out.subarray(0,op);
-}
-window.__inflate=inflate;
-
-function b64(s){
-  var bin=atob(s),n=bin.length,u=new Uint8Array(n);
-  for(var i=0;i<n;i++) u[i]=bin.charCodeAt(i);
-  return u;
-}
-function utf8(u){ return new TextDecoder("utf-8").decode(u); }
-function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-
-var meta,T,TL,RT,RTL,RID,N=0,LO=0,cache={},corder=[],stack=[],cur=null,usePush=true,view=$("main"),qi=$("q"),fs=17;
-
-function partOf(id){
-  for(var i=0;i<meta.parts.length;i++) if(id>=meta.parts[i].lo&&id<meta.parts[i].hi) return i;
-  return -1;
-}
-function findBlock(id){
-  var bs=meta.bs,lo=0,hi=bs.length-1,mid;
-  while(lo<hi){ mid=(lo+hi+1)>>1; if(bs[mid]<=id) lo=mid; else hi=mid-1; }
-  return lo;
-}
-function getBlock(b){
-  if(cache[b]) return cache[b];
-  var s=utf8(inflate(b64($("b"+b).textContent))).split("\x01");
-  cache[b]=s; corder.push(b);
-  if(corder.length>6) delete cache[corder.shift()];
-  return s;
-}
-function articleHtml(id){
-  var b=findBlock(id);
-  return getBlock(b)[id-meta.bs[b]];
-}
-
-function renderHome(){
-  var h='<div class="box"><b>'+esc(meta.title)+'</b> - עותק לא מקוון<br>'+N+' ערכים בקובץ הזה';
-  if(meta.parts.length>1) h+=' (מתוך '+meta.total+' בכל הקבצים). הקובץ הזה הוא חלק '+(meta.part+1)+' מתוך '+meta.parts.length;
-  h+='<br><small>'+esc(meta.zim||"")+(meta.built?(" | נבנה: "+esc(meta.built)):"")+'</small></div>';
-  h+='<p>הקלד שם ערך בתיבת החיפוש שבראש המסך.</p>';
-  h+='<button class="act" data-act="rn">ערך אקראי</button><button class="act" data-act="br">דפדוף אלפביתי</button>';
-  if(meta.parts.length>1){
-    h+='<h3>כל הקבצים</h3>';
-    for(var i=0;i<meta.parts.length;i++){
-      var p=meta.parts[i];
-      h+='<div class="r" style="cursor:default">'+(i===meta.part?"&#9658; ":"")+'חלק '+(i+1)+': '+esc(p.a)+' - '+esc(p.z)+'<br><small>'+esc(p.name)+'</small></div>';
-    }
-  }
-  view.innerHTML=h;
-}
-function resultRow(id,sub){
-  var h='<div class="r" data-i="'+id+'">'+esc(T[id-LO]);
-  if(sub) h+=' <small>(הפניה: '+esc(sub)+')</small>';
-  return h+'</div>';
-}
-function renderResults(raw){
-  var q=raw.trim().toLowerCase();
-  if(!q){ renderHome(); return; }
-  var MAX=60,res=[],seen={},i,j;
-  for(i=0;i<N&&res.length<MAX;i++){ if(TL[i].lastIndexOf(q,0)===0){ res.push([i+LO,""]); seen[i+LO]=1; } }
-  for(j=0;j<RTL.length&&res.length<MAX;j++){
-    if(RTL[j].lastIndexOf(q,0)===0&&!seen[RID[j]]){ res.push([RID[j],RT[j]]); seen[RID[j]]=1; }
-  }
-  for(i=0;i<N&&res.length<MAX;i++){ if(!seen[i+LO]&&TL[i].indexOf(q)>0){ res.push([i+LO,""]); seen[i+LO]=1; } }
-  for(j=0;j<RTL.length&&res.length<MAX;j++){
-    if(RTL[j].indexOf(q)>0&&!seen[RID[j]]){ res.push([RID[j],RT[j]]); seen[RID[j]]=1; }
-  }
-  var h='';
-  for(i=0;i<res.length;i++) h+=resultRow(res[i][0],res[i][1]);
-  view.innerHTML=h||'<p>לא נמצאו ערכים.</p>';
-}
-function renderBrowse(start){
-  start=Math.max(0,Math.min(start,N-1)); start-=start%100;
-  var end=Math.min(N,start+100),h='<div class="box">ערכים '+(start+1)+' - '+end+' מתוך '+N+'<br>';
-  h+='<button class="act" data-act="pv" data-s="'+(start-100)+'">&#8594; הקודמים</button>';
-  h+='<button class="act" data-act="nx" data-s="'+(start+100)+'">הבאים &#8592;</button><br>';
-  h+='קפיצה לפי תחילית: <input class="jmp" id="jp"> <button class="act" data-act="jp">קפוץ</button></div>';
-  for(var i=start;i<end;i++) h+=resultRow(i+LO,"");
-  view.innerHTML=h; window.scrollTo(0,0);
-  cur={t:"br",s:start};
-}
-function jump(){
-  var q=($("jp").value||"").trim().toLowerCase();
-  if(!q) return;
-  for(var i=0;i<N;i++) if(TL[i].lastIndexOf(q,0)===0){ renderBrowse(i); return; }
-  alert("לא נמצא ערך שמתחיל ב: "+q);
-}
-function renderArticle(id,label){
-  var p=partOf(id);
-  if(p!==meta.part){
-    var lt=(label||"").trim();
-    view.innerHTML='<h1 class="at">'+esc(lt||"ערך בקובץ אחר")+'</h1>'+(p>=0?'<div class="box">הערך נמצא ב<b>חלק '+(p+1)+'</b> (ערכים '+esc(meta.parts[p].a)+' - '+esc(meta.parts[p].z)+')<br><small>'+esc(meta.parts[p].name)+'</small><br>פתח את הקובץ הזה וחפש שם את הערך.</div>':'<div class="box">הערך לא נמצא.</div>');
-    window.scrollTo(0,0);
-    return;
-  }
-  var h;
-  try{ h=articleHtml(id); }catch(e){ h="<p>שגיאה בפענוח הערך: "+esc(String(e))+"</p>"; }
-  view.innerHTML='<h1 class="at">'+esc(T[id-LO])+'</h1><div class="art">'+h+'</div>';
-  window.scrollTo(0,0);
-}
-function show(st){
-  cur=st;
-  if(st.t==="a") renderArticle(st.id,st.l);
-  else if(st.t==="br") renderBrowse(st.s);
-  else if(st.t==="s"){ qi.value=st.q; renderResults(st.q); window.scrollTo(0,0); }
-  else { qi.value=""; renderHome(); window.scrollTo(0,0); }
-  cur=st;
-}
-function pushHist(){
-  if(cur) stack.push(cur);
-  if(usePush){ try{ history.pushState({n:stack.length},""); }catch(e){ usePush=false; } }
-}
-function go(st){
-  pushHist();
-  show(st);
-}
-function backInternal(){
-  if(stack.length) show(stack.pop()); else { show({t:"home"}); }
-}
-function back(){
-  if(usePush&&stack.length){ try{ history.back(); return; }catch(e){ usePush=false; } }
-  backInternal();
-}
-window.addEventListener("popstate",function(){ backInternal(); });
-
-view.addEventListener("click",function(ev){
-  var el=ev.target,act=null,id=null;
-  while(el&&el!==view){
-    if(el.getAttribute){
-      if(el.getAttribute("data-i")!==null){ id=parseInt(el.getAttribute("data-i"),10); break; }
-      if(el.getAttribute("data-act")!==null){ act=el; break; }
-    }
-    el=el.parentNode;
-  }
-  if(id!==null){ ev.preventDefault(); go({t:"a",id:id,l:(el.textContent||"")}); return; }
-  if(act){
-    var a=act.getAttribute("data-act");
-    if(a==="rn") randomArticle();
-    else if(a==="br") go({t:"br",s:0});
-    else if(a==="pv"||a==="nx"){ renderBrowse(parseInt(act.getAttribute("data-s"),10)); }
-    else if(a==="jp") jump();
-  } else if(ev.target&&ev.target.tagName==="A"){ ev.preventDefault(); }
-});
-function randomArticle(){
-  var p=meta.parts[meta.part];
-  go({t:"a",id:p.lo+Math.floor(Math.random()*(p.hi-p.lo))});
-}
-function setFs(d){
-  fs=Math.max(11,Math.min(34,fs+d));
-  document.documentElement.style.fontSize=fs+"px";
-  try{ localStorage.setItem("wk_fs",String(fs)); }catch(e){}
-}
-var tm=null;
-qi.addEventListener("input",function(){
-  clearTimeout(tm);
-  tm=setTimeout(function(){
-    var v=qi.value,st=v.trim()?{t:"s",q:v}:{t:"home"};
-    if(cur&&cur.t==="s"){ cur=st; }
-    else if(cur&&cur.t==="home"&&st.t==="home"){ cur=st; }
-    else{ pushHist(); cur=st; }
-    renderResults(v);
-  },180);
-});
-$("bk").onclick=back;
-$("hm").onclick=function(){ qi.value=""; go({t:"home"}); };
-$("rn").onclick=randomArticle;
-$("br").onclick=function(){ go({t:"br",s:0}); };
-$("f1").onclick=function(){ setFs(2); };
-$("f2").onclick=function(){ setFs(-2); };
-
-function init(){
-  try{
-    try{ var s=parseFloat(localStorage.getItem("wk_fs")); if(s) { fs=s; setFs(0); } }catch(e){}
-    meta=JSON.parse($("meta").textContent);
-    T=utf8(inflate(b64($("tt").textContent))).split("\n"); N=T.length; LO=meta.parts[meta.part].lo;
-    TL=new Array(N);
-    for(var i=0;i<N;i++) TL[i]=T[i].toLowerCase();
-    RT=[];RTL=[];RID=[];
-    var rr=utf8(inflate(b64($("rr").textContent)));
-    if(rr){
-      var lines=rr.split("\n");
-      for(var j=0;j<lines.length;j++){
-        var tab=lines[j].lastIndexOf("\t");
-        if(tab<0) continue;
-        RT.push(lines[j].substring(0,tab)); RTL.push(RT[RT.length-1].toLowerCase()); RID.push(parseInt(lines[j].substring(tab+1),10));
-      }
-    }
-    document.title=meta.parts.length>1?(meta.title+" - חלק "+(meta.part+1)):meta.title;
-    renderHome(); cur={t:"home"};
-    window.__ready=true;
-  }catch(e){
-    view.innerHTML='<p>שגיאה בטעינה: '+esc(String(e))+'</p>';
-  }
-}
-setTimeout(init,30);
-})();
-'''
-
-
-def make_tail(meta):
-    return ('<script type="application/json" id="meta">%s</script>\n<script>%s</script>\n</body></html>\n'
-            % (json.dumps(meta, ensure_ascii=False, separators=(",", ":")), VIEWER_JS)).encode("utf-8")
-
-
-
-# ----------------------------------------------------------------------------------------------
-# static mode: plain HTML, no JavaScript
+# folders (one per first letter) and sorting
 # ----------------------------------------------------------------------------------------------
 LINK_RE = re.compile(r'<a data-i="(\d+)">(.*?)</a>', re.S)
-BAD_FN_ALL = BAD_FN
+FINAL_LETTERS = str.maketrans("ךםןףץ", "כמנפצ")
+NIKUD_RE = re.compile(r"[\u0591-\u05C7]")
+HEB_LETTERS = "אבגדהוזחטיכלמנסעפצקרשת"          # 22 letters (final forms are merged into the regular ones)
+FOLDER_NAMES = list(HEB_LETTERS) + ["אחר"]
+FOLDER_ASCII = ["alef", "bet", "gimel", "dalet", "he", "vav", "zayin", "het", "tet", "yod", "kaf", "lamed", "mem",
+                "nun", "samekh", "ayin", "pe", "tsadi", "qof", "resh", "shin", "tav", "other"]
+INDEX_NAME = "000_אינדקס"
+
+
+def norm_key(t):
+    """sort key: no nikud, final letters merged, lower case"""
+    return NIKUD_RE.sub("", t).translate(FINAL_LETTERS).lower()
+
+
+def folder_of(t):
+    """0..21 = Hebrew first letter, 22 = everything else (digits, English, symbols)"""
+    for ch in norm_key(t):
+        if ch.isalnum():
+            return HEB_LETTERS.index(ch) if ch in HEB_LETTERS else 22
+    return 22
+
 
 STATIC_CSS = (
     ":root{color-scheme:light dark}"
-    "body{font-family:system-ui,Arial,sans-serif;line-height:1.7;margin:8px;overflow-wrap:anywhere}"
-    "h1{font-size:1.45em;border-bottom:1px solid #999;margin:1em 0 .4em}"
+    "body{font-family:system-ui,Arial,sans-serif;line-height:1.7;margin:0 8px 40px;overflow-wrap:anywhere}"
+    "#bar{position:sticky;top:0;z-index:5;background:#202124;padding:6px 2px;white-space:nowrap;overflow-x:auto}"
+    "#bar a{color:#8ab4f8;text-decoration:none;display:inline-block;padding:5px 13px;margin-left:5px;border:1px solid #5f6368;border-radius:6px}"
+    "h1{font-size:1.45em;border-bottom:1px solid #999;margin:.8em 0 .4em}"
     "h2{font-size:1.25em;border-bottom:1px solid #999;margin-top:1.3em}h3{font-size:1.1em}"
     "a{color:#0645ad}table{border-collapse:collapse;display:block;overflow-x:auto}td,th{border:1px solid #999;padding:3px 6px}"
     ".bar a{display:inline-block;padding:4px 9px;margin:2px;border:1px solid #999;border-radius:5px;text-decoration:none}"
-    ".t div{padding:3px 0}.n{opacity:.75;font-size:.9em}"
+    ".t div{padding:3px 0}"
+    ".art{content-visibility:auto;contain-intrinsic-size:auto 1500px;border-bottom:2px solid #888;padding-bottom:6px}"
+    ".pm{color:#fff;background:#1a73e8;border-radius:4px;padding:0 6px;font-size:.8em;margin-left:6px}"
     "@media (prefers-color-scheme:dark){body{background:#121212;color:#e4e4e4}a{color:#8ab4f8}}"
 )
+
+BAR_HTML = ('<div id="bar"><a href="#top">&#8593;</a><a href="#toc">התחלה</a><a href="#p25">25%</a>'
+            '<a href="#p50">50%</a><a href="#p75">75%</a><a href="#p100">100%</a></div>')
 
 
 def fn_piece(t, maxlen=35):
@@ -621,147 +271,192 @@ def fn_piece(t, maxlen=35):
 def static_head(title):
     return ('<!doctype html>\n<html lang="he" dir="rtl"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<title>%s</title><style>%s</style></head><body>\n' % (htmllib.escape(title), STATIC_CSS))
+            '<title>%s</title><style>%s</style></head><body>\n%s' % (htmllib.escape(title), STATIC_CSS, BAR_HTML))
+
+
+def gkey(k, plen):
+    k = re.sub(r"^[\W_]+", "", k)
+    return k[:plen] or "?"
 
 
 def letter_groups(keys):
-    """keys: list of strings (already in sorted order) -> list of (char, first_position)."""
+    """keys: group keys in sorted order -> list of (key, first_position)."""
     out, last = [], None
     for pos, k in enumerate(keys):
-        c = (k[:1] or "?").upper()
+        c = k.upper()
         if c != last:
             out.append((c, pos))
             last = c
     return out
 
 
+def emit_list(out, entries, plen):
+    """entries: list of (sortkey, html). Writes the group bar and the list of titles, with the 25/50/75/100% markers."""
+    esc = htmllib.escape
+    n = len(entries)
+    groups = letter_groups([gkey(e[0], plen) for e in entries])
+    out.write('<div class="bar">%s</div>' % "".join(
+        '<a href="#g%d">%s</a>' % (gi, esc(c)) for gi, (c, _) in enumerate(groups)))
+    pp = {}
+    for pct in (25, 50, 75, 100):
+        pos = min(n - 1, max(0, -(-n * pct // 100) - 1))
+        pp.setdefault(pos, []).append(pct)
+    out.write('<div class="t" id="toc">')
+    gi = 0
+    for pos, e in enumerate(entries):
+        if gi < len(groups) and groups[gi][1] == pos:
+            out.write('<h2 id="g%d">%s</h2>' % (gi, esc(groups[gi][0])))
+            gi += 1
+        marks = "".join('<span id="p%d"></span><b class="pm">%d%%</b>' % (p, p) for p in pp.get(pos, []))
+        out.write("<div>%s%s</div>" % (marks, e[1]))
+    out.write("</div>")
+
+
 def build_static(args, db, titles, red_lines, N):
     import bisect
-    part_limit = args.part_mb * 1024 * 1024
-    hard_limit = args.hard_mb * 1024 * 1024
+    from urllib.parse import quote
+    esc = htmllib.escape
+    part_limit = int(args.part_mb * 1024 * 1024)
+    hard_limit = int(args.hard_mb * 1024 * 1024)
+    fol = [folder_of(t) for t in titles]          # ids are sorted by (folder, key): every folder is one id range
 
-    # ---- boundaries of the parts (by size of the cleaned html)
+    # ---- boundaries of the files: never cross a folder, ~part_mb each
     parts, cur = [], None
     for aid, ln in db.execute("SELECT id, length(CAST(h AS BLOB)) FROM a ORDER BY id"):
-        cost = ln + len(titles[aid].encode("utf-8")) * 2 + 260
-        if cur is None or (cur["size"] + cost > part_limit and cur["hi"] > cur["lo"]):
-            cur = {"lo": aid, "hi": aid, "size": 20000}
+        cost = ln + len(titles[aid].encode("utf-8")) * 2 + 320
+        if cur is None or cur["f"] != fol[aid] or (cur["size"] + cost > part_limit and cur["hi"] > cur["lo"]):
+            cur = {"f": fol[aid], "lo": aid, "hi": aid, "size": 20000}
             parts.append(cur)
         cur["hi"] = aid + 1
         cur["size"] += cost
-    K = len(parts)
-    width = max(3, len(str(K)))
-    names = ["%0*d_%s - %s.html" % (width, i + 1, fn_piece(titles[p["lo"]]), fn_piece(titles[p["hi"] - 1]))
-             for i, p in enumerate(parts)]
+    per_folder = {}
+    for p in parts:
+        per_folder.setdefault(p["f"], []).append(p)
+    width = max(3, max(len(str(len(v))) for v in per_folder.values()))
+    for f, plist in per_folder.items():
+        for n, p in enumerate(plist, 1):
+            p["n"] = n
+            p["dir"] = "%02d_%s" % (f + 1, FOLDER_NAMES[f])
+            p["name"] = "%0*d_%s - %s.html" % (width, n, fn_piece(titles[p["lo"]]), fn_piece(titles[p["hi"] - 1]))
     los = [p["lo"] for p in parts]
-    log("static mode: %d articles -> %d file(s)" % (N, K))
+    log("%d articles -> %d folder(s), %d file(s)" % (N, len(per_folder), len(parts)))
 
-    outputs = []
+    def pidx(aid):
+        return bisect.bisect_right(los, aid) - 1
+
+    items = []      # (path, arcname)
+
+    # ---- the index of every folder: name -> file number
+    by_f = {}
+    for j in range(N):
+        p = parts[pidx(j)]
+        by_f.setdefault(p["f"], []).append((norm_key(titles[j]), "%s <b>[%0*d]</b>" % (esc(titles[j]), width, p["n"])))
+    for lname, name, tid in red_lines:
+        f2 = folder_of(name)
+        tp = parts[pidx(tid)]
+        ref = ("%0*d" % (width, tp["n"])) if tp["f"] == f2 else ("%s/%0*d" % (FOLDER_NAMES[tp["f"]], width, tp["n"]))
+        by_f.setdefault(f2, []).append((norm_key(name), "%s &#8592; %s <b>[%s]</b>" % (esc(name), esc(titles[tid]), ref)))
+    del red_lines
+    chunk_limit = max(part_limit - 150000, part_limit // 2)
+    for f in sorted(by_f):
+        entries = by_f[f]
+        entries.sort(key=lambda e: e[0])
+        chunks, cur_c, size = [], [], 0
+        for e in entries:
+            cur_c.append(e)
+            size += len(e[1].encode("utf-8")) + 20
+            if size >= chunk_limit:
+                chunks.append(cur_c)
+                cur_c, size = [], 0
+        if cur_c:
+            chunks.append(cur_c)
+        inames = [INDEX_NAME + ".html"] if len(chunks) == 1 else ["%s %d.html" % (INDEX_NAME, i + 1) for i in range(len(chunks))]
+        table = "".join('<div>%0*d &#8594; %s</div>' % (width, p["n"], esc(p["name"][:-5])) for p in per_folder.get(f, []))
+        d = "%02d_%s" % (f + 1, FOLDER_NAMES[f])
+        os.makedirs(os.path.join(args.outdir, d), exist_ok=True)
+        for ci, chunk in enumerate(chunks):
+            path = os.path.join(args.outdir, d, inames[ci])
+            with open(path, "w", encoding="utf-8") as out:
+                out.write(static_head("%s - אינדקס %s" % (args.title, FOLDER_NAMES[f])))
+                out.write('<h1 id="top">%s - אינדקס אות %s%s</h1>' % (esc(args.title), esc(FOLDER_NAMES[f]),
+                          (" (חלק %d מתוך %d)" % (ci + 1, len(chunks))) if len(chunks) > 1 else ""))
+                out.write('<p>חפש כאן שם ערך (חיפוש בדף של האפליקציה). ליד כל שם מופיע <b>מספר הקובץ</b> '
+                          '(ואם הוא בתיקיית אות אחרת - האות והמספר). שם עם חץ (&#8592;) הוא שם חלופי שמפנה לערך.</p>')
+                out.write('<details><summary>רשימת הקבצים בתיקייה</summary><div class="t">%s</div></details>' % table)
+                emit_list(out, chunk, 2 if f < 22 else 1)
+                out.write("</body></html>\n")
+            items.append((path, d + "/" + inames[ci]))
+            log("wrote %s/%s  %.1f MB" % (d, inames[ci], os.path.getsize(path) / 1e6))
+    del by_f
 
     # ---- the content files
     for i, p in enumerate(parts):
-        lo, hi = p["lo"], p["hi"]
-        path = os.path.join(args.outdir, names[i])
+        f, lo, hi = p["f"], p["lo"], p["hi"]
+        plist = per_folder[f]
+        path = os.path.join(args.outdir, p["dir"], p["name"])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        prev_p = parts[i - 1] if i > 0 and parts[i - 1]["f"] == f else None
+        next_p = parts[i + 1] if i + 1 < len(parts) and parts[i + 1]["f"] == f else None
 
         def sub_link(m, lo=lo, hi=hi):
             t = int(m.group(1))
             return '<a href="#a%d">%s</a>' % (t, m.group(2)) if lo <= t < hi else m.group(2)
 
-        keys = [titles[j].lower() for j in range(lo, hi)]
-        groups = letter_groups(keys)
+        entries = [(norm_key(titles[j]), '<a href="#a%d">%s</a>' % (j, esc(titles[j]))) for j in range(lo, hi)]
         with open(path, "w", encoding="utf-8") as out:
-            out.write(static_head("%s - חלק %d: %s - %s" % (args.title, i + 1, titles[lo], titles[hi - 1])))
-            out.write('<h1 id="top">%s - חלק %d מתוך %d</h1>' % (htmllib.escape(args.title), i + 1, K))
-            out.write('<p>ערכים: <b>%s</b> עד <b>%s</b> (%d ערכים). קישור לערך שנמצא בקובץ אחר אינו פעיל - '
-                      'חפש את שם הערך בקובץ <b>%s</b> כדי לדעת באיזה קובץ הוא נמצא.</p>'
-                      % (htmllib.escape(titles[lo]), htmllib.escape(titles[hi - 1]), hi - lo, "000_אינדקס כללי"))
-            out.write('<div class="bar">%s</div>' % "".join(
-                '<a href="#g%d">%s</a>' % (gi, htmllib.escape(c)) for gi, (c, _) in enumerate(groups)))
-            out.write('<div class="t">')
-            gi = 0
-            for pos in range(hi - lo):
-                if gi < len(groups) and groups[gi][1] == pos:
-                    out.write('<h2 id="g%d">%s</h2>' % (gi, htmllib.escape(groups[gi][0])))
-                    gi += 1
-                out.write('<div><a href="#a%d">%s</a></div>' % (lo + pos, htmllib.escape(titles[lo + pos])))
-            out.write("</div><hr>\n")
+            out.write(static_head("%s - %s %d: %s - %s" % (args.title, FOLDER_NAMES[f], p["n"], titles[lo], titles[hi - 1])))
+            out.write('<h1 id="top">%s - אות %s - קובץ %d מתוך %d</h1>' % (esc(args.title), esc(FOLDER_NAMES[f]), p["n"], len(plist)))
+            out.write('<p>ערכים: <b>%s</b> עד <b>%s</b> (%d ערכים)<br>%s%s'
+                      'אינדקס כללי של האות: <b>%s</b> בתיקייה זו.<br>'
+                      'קישור לערך שנמצא בקובץ אחר אינו פעיל - חפש את שמו באינדקס.</p>' % (
+                          esc(titles[lo]), esc(titles[hi - 1]), hi - lo,
+                          ("קובץ קודם: %s<br>" % esc(prev_p["name"][:-5])) if prev_p else "",
+                          ("קובץ הבא: %s<br>" % esc(next_p["name"][:-5])) if next_p else "",
+                          INDEX_NAME))
+            emit_list(out, entries, 2 if f < 22 else 1)
+            out.write("<hr>\n")
             for aid, h in db.execute("SELECT id, h FROM a WHERE id>=? AND id<? ORDER BY id", (lo, hi)):
-                out.write('<h1 id="a%d">%s</h1>%s<p><a href="#top">&#8593; לראש הקובץ (אינדקס)</a></p><hr>\n'
-                          % (aid, htmllib.escape(titles[aid]), LINK_RE.sub(sub_link, h)))
+                out.write('<section class="art" id="a%d"><h1>%s</h1>%s<p><a href="#toc">&#8593; לרשימת הכותרות</a></p></section>\n'
+                          % (aid, esc(titles[aid]), LINK_RE.sub(sub_link, h)))
             out.write("</body></html>\n")
         size = os.path.getsize(path)
-        outputs.append(path)
-        log("wrote %s  %.1f MB  (articles %d-%d)%s" % (names[i], size / 1e6, lo, hi - 1,
-            "  WARNING: bigger than %d MB" % args.hard_mb if size > hard_limit else ""))
-
-    # ---- the general index (name -> number of the file)
-    def pnum(aid):
-        return bisect.bisect_right(los, aid)
-
-    entries = [(titles[j].lower(), htmllib.escape(titles[j]), pnum(j)) for j in range(N)]
-    if not args.no_redirects:
-        for lname, name, tid in red_lines:
-            entries.append((lname, "%s &#8592; %s" % (htmllib.escape(name), htmllib.escape(titles[tid])), pnum(tid)))
-    entries.sort(key=lambda e: e[0])
-    del red_lines
-
-    idx_chunks, cur, size = [], [], 0
-    for e in entries:
-        cur.append(e)
-        size += len(e[1].encode("utf-8")) + 40
-        if size >= part_limit - 200000:
-            idx_chunks.append(cur)
-            cur, size = [], 0
-    if cur:
-        idx_chunks.append(cur)
-    table = "".join('<div>%0*d &#8594; %s</div>' % (width, i + 1, htmllib.escape(names[i][:-5])) for i in range(K))
-    for ci, chunk in enumerate(idx_chunks):
-        iname = "000_אינדקס כללי.html" if len(idx_chunks) == 1 else "000_אינדקס כללי %d.html" % (ci + 1)
-        path = os.path.join(args.outdir, iname)
-        groups = letter_groups([e[0] for e in chunk])
-        with open(path, "w", encoding="utf-8") as out:
-            out.write(static_head("%s - אינדקס כללי" % args.title))
-            out.write('<h1>%s - אינדקס כללי%s</h1>' % (htmllib.escape(args.title),
-                      (" (חלק %d מתוך %d)" % (ci + 1, len(idx_chunks))) if len(idx_chunks) > 1 else ""))
-            out.write('<p>חפש כאן שם של ערך (חיפוש בדף של האפליקציה). ליד כל ערך מופיע <b>מספר הקובץ</b> שבו הוא נמצא. '
-                      'שם עם חץ (&#8592;) הוא שם חלופי שמפנה לערך.</p>')
-            out.write('<div class="bar">%s</div>' % "".join(
-                '<a href="#g%d">%s</a>' % (gi, htmllib.escape(c)) for gi, (c, _) in enumerate(groups)))
-            out.write('<details><summary>רשימת הקבצים</summary><div class="t">%s</div></details>' % table)
-            out.write('<div class="t">')
-            gi = 0
-            for pos, e in enumerate(chunk):
-                if gi < len(groups) and groups[gi][1] == pos:
-                    out.write('<h2 id="g%d">%s</h2>' % (gi, htmllib.escape(groups[gi][0])))
-                    gi += 1
-                out.write('<div>%s <b>[%0*d]</b></div>' % (e[1], width, e[2]))
-            out.write("</div></body></html>\n")
-        outputs.insert(ci, path)
-        log("wrote %s  %.1f MB" % (iname, os.path.getsize(path) / 1e6))
-    return outputs
+        items.append((path, p["dir"] + "/" + p["name"]))
+        log("wrote %s/%s  %.1f MB  (articles %d-%d)%s" % (p["dir"], p["name"], size / 1e6, lo, hi - 1,
+            "  WARNING: bigger than %.1f MB" % args.hard_mb if size > hard_limit else ""))
+    return items
 
 
-def zip_outputs(args, outputs, t0):
+def zip_outputs(args, items, t0):
+    """items: (path, arcname). One ZIP with everything; a new ZIP is started only near the size limit."""
     if args.zip:
-        zip_limit = args.zip_limit_mb * 1024 * 1024
-        zi, z, zpath, zc, last_c = 0, None, None, 0, 0
-        zips = []
-        for final in outputs:
-            if z is not None and zc + last_c * 1.2 > zip_limit:
-                z.close()
-                z = None
-            if z is None:
+        limit = args.zip_limit_mb * 1024 * 1024
+        z, zc, last_c, zi = None, 0, 0, 0
+        zips, dirs = [], set()
+        for path, arc in items:
+            if z is None or zc + last_c * 1.2 > limit:
+                if z is not None:
+                    z.close()
                 zi += 1
-                zpath = os.path.join(args.outdir, "%s-zip%02d.zip" % (args.base_name, zi))
+                zpath = os.path.join(args.outdir, "%s-%02d.zip" % (args.base_name, zi))
                 z = zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True)
                 zips.append(zpath)
                 zc = 0
-            z.write(final, arcname=os.path.basename(final))
+            z.write(path, arcname=arc)
             last_c = z.infolist()[-1].compress_size
             zc += last_c
-            os.remove(final)
+            os.remove(path)
+            dirs.add(os.path.dirname(path))
         if z is not None:
             z.close()
+        for d in dirs:
+            try:
+                os.rmdir(d)
+            except OSError:
+                pass
+        if len(zips) == 1:                      # a single ZIP gets the plain name
+            final = os.path.join(args.outdir, "%s.zip" % args.base_name)
+            os.replace(zips[0], final)
+            zips = [final]
         for zpath in zips:
             zmb = os.path.getsize(zpath) / 1048576
             log("zipped %s  %.0f MB" % (os.path.basename(zpath), zmb))
@@ -771,7 +466,6 @@ def zip_outputs(args, outputs, t0):
     log("done in %.1f min" % ((time.time() - t0) / 60))
 
 
-
 # ----------------------------------------------------------------------------------------------
 def main():
     global PID, ZIM_PATH, DROP_CLASSES
@@ -779,20 +473,19 @@ def main():
     ap.add_argument("--zim", required=True)
     ap.add_argument("--workdir", default="work")
     ap.add_argument("--outdir", default="output")
-    ap.add_argument("--part-mb", type=int, default=30, help="target size of one HTML file (MB); a file may go a bit over")
-    ap.add_argument("--hard-mb", type=int, default=32, help="warn if an HTML file is bigger than this (MB)")
-    ap.add_argument("--zip-limit-mb", type=int, default=1800, help="start a new ZIP when the current one reaches about this size (MB)")
-    ap.add_argument("--mode", choices=["static", "viewer"], default="static",
-                    help="static = plain HTML without JavaScript (default); viewer = JavaScript viewer with search box")
-    ap.add_argument("--title", default="ויקיפדיה העברית", help="name shown inside the viewer")
-    ap.add_argument("--block-kb", type=int, default=512)
+    ap.add_argument("--part-mb", type=int, default=10, help="target size of one HTML file (MB); a file may go a bit over")
+    ap.add_argument("--hard-mb", type=float, default=None, help="warn if an HTML file is bigger than this (MB); default part-mb + 10%%")
+    ap.add_argument("--zip-limit-mb", type=int, default=1900, help="start a new ZIP when the current one reaches about this size (MB)")
+    ap.add_argument("--title", default="ויקיפדיה העברית", help="name shown inside the files")
     ap.add_argument("--keep-references", action="store_true")
-    ap.add_argument("--no-redirects", action="store_true", help="do not add redirect names to the search")
+    ap.add_argument("--no-redirects", action="store_true", help="do not add redirect names to the indexes")
     ap.add_argument("--limit", type=int, default=0, help="only first N articles (testing)")
     ap.add_argument("--workers", type=int, default=0)
-    ap.add_argument("--zip", action="store_true", help="group the HTML files into ZIPs (and delete the .html)")
+    ap.add_argument("--zip", action="store_true", help="pack everything into one ZIP (split only above the limit) and delete the .html")
     ap.add_argument("--base-name", default="Wikipedia-he")
     args = ap.parse_args()
+    if args.hard_mb is None:
+        args.hard_mb = args.part_mb * 1.1
 
     os.makedirs(args.workdir, exist_ok=True)
     os.makedirs(args.outdir, exist_ok=True)
@@ -806,8 +499,9 @@ def main():
     if not arts:
         log("No HTML articles found in the ZIM file.")
         sys.exit(1)
-    order = sorted(arts, key=lambda p: (arts[p].lower(), arts[p], p))
-    titles = [re.sub(r"[\t\r\n]+", " ", arts[p]).strip() or p for p in order]
+    tmap = {p: (re.sub(r"[\t\r\n]+", " ", t).strip() or p) for p, t in arts.items()}
+    order = sorted(arts, key=lambda p: (folder_of(tmap[p]), norm_key(tmap[p]), tmap[p], p))
+    titles = [tmap[p] for p in order]
     N = len(order)
     PID = {p: i for i, p in enumerate(order)}
     red_lines, seen_red = [], set()
@@ -822,10 +516,10 @@ def main():
                     seen_red.add(key)
                     red_lines.append((name.lower(), name, PID[tp]))
     red_lines.sort()
-    del arts, reds, title_set, seen_red
-    log("sorted %d articles, %d search redirects (%.0fs)" % (N, len(red_lines), time.time() - t0))
+    del arts, reds, tmap, title_set, seen_red
+    log("sorted %d articles, %d redirect names (%.0fs)" % (N, len(red_lines), time.time() - t0))
 
-    # ---- stage A: clean every article in parallel -> sqlite
+    # ---- clean every article in parallel -> sqlite
     ctx = mp.get_context("fork")
     dbpath = os.path.join(args.workdir, "cleaned.db")
     if os.path.exists(dbpath):
@@ -850,137 +544,14 @@ def main():
     db.commit()
     log("cleaning done: %d articles, %.0f MB of cleaned HTML (%.0f min)" % (done, total_chars / 1e6, (time.time() - t1) / 60))
     del order
-
-    if args.mode == "static":
-        pool.close()
-        pool.join()
-        outputs = build_static(args, db, titles, red_lines, N)
-        db.close()
-        os.remove(dbpath)
-        zip_outputs(args, outputs, t0)
-        return
-
-    # ---- stage B: blocks -> parts (~part-mb each)
-    block_bytes = args.block_kb * 1024
-    part_limit = args.part_mb * 1024 * 1024
-    hard_limit = args.hard_mb * 1024 * 1024
-
-    # rough size of the per-part title/search index, so the final file lands near part_mb
-    idx_cost = [len(t.encode("utf-8")) + 1 for t in titles]
-    for _, name, tid in red_lines:
-        idx_cost[tid] += len(name.encode("utf-8")) + 8
-    INDEX_FACTOR = 0.8                                   # deflate + base64 of the title lists
-    BASE_OVERHEAD = len(HEAD) * 2 + len(VIEWER_JS) * 2 + 20000
-
-    def block_iter():
-        buf, size, start, expected = [], 0, 0, 0
-        for aid, h in db.execute("SELECT id, h FROM a ORDER BY id"):
-            while expected < aid:               # safety: never leave a hole
-                if not buf:
-                    start = expected
-                buf.append("<p>(ערך חסר)</p>")
-                expected += 1
-            if not buf:
-                start = aid
-            buf.append(h)
-            expected = aid + 1
-            size += len(h.encode("utf-8"))
-            if size >= block_bytes:
-                yield start, len(buf), "\x01".join(buf).encode("utf-8")
-                buf, size = [], 0
-        while expected < N:
-            if not buf:
-                start = expected
-            buf.append("<p>(ערך חסר)</p>")
-            expected += 1
-        if buf:
-            yield start, len(buf), "\x01".join(buf).encode("utf-8")
-
-    parts = []   # dicts: blk (temp file with the packed blocks), lo, hi, bs, fh, bytes, idx
-
-    def new_part():
-        p = {"blk": os.path.join(args.workdir, "part%d.blk" % (len(parts) + 1)), "bs": [], "lo": None, "hi": None,
-             "bytes": 0, "idx": 0.0}
-        p["fh"] = open(p["blk"], "wb")
-        parts.append(p)
-        return p
-
-    def part_est(p):
-        return BASE_OVERHEAD + p["bytes"] + p["idx"]
-
-    part = new_part()
-    t2, nblocks = time.time(), 0
-    for start, count, b64 in ordered_map(pool, compress_block, block_iter(), workers * 3):
-        blob_len = len(b64) + 64
-        add_idx = sum(idx_cost[start:start + count]) * INDEX_FACTOR
-        if part["bs"] and part_est(part) + blob_len + add_idx > part_limit:
-            part["fh"].close()
-            log("part %d complete: %d articles, ~%.1f MB" % (len(parts), part["hi"] - part["lo"], part_est(part) / 1e6))
-            part = new_part()
-        if part["lo"] is None:
-            part["lo"] = start
-        bn = len(part["bs"])
-        part["fh"].write(b'<script type="text/plain" id="b%d">' % bn)
-        part["fh"].write(b64)
-        part["fh"].write(b"</script>\n")
-        part["bs"].append(start)
-        part["hi"] = start + count
-        part["bytes"] += blob_len
-        part["idx"] += add_idx
-        nblocks += 1
-        if nblocks % 200 == 0:
-            log("packed %d blocks (article %d/%d)" % (nblocks, start + count, N))
-    part["fh"].close()
     pool.close()
     pool.join()
+
+    items = build_static(args, db, titles, red_lines, N)
     db.close()
     os.remove(dbpath)
-    log("packed %d blocks into %d part(s) (%.0f min)" % (nblocks, len(parts), (time.time() - t2) / 60))
+    zip_outputs(args, items, t0)
 
-    # ---- finalize parts: file names (first - last article), per-part index, viewer
-    def fn_piece(t, maxlen=35):
-        t = BAD_FN.sub(" ", t)
-        t = re.sub(r"\s+", " ", t).strip(" .")
-        if len(t) > maxlen:
-            t = t[:maxlen].rstrip(" .")
-        return t or "_"
-
-    width = max(3, len(str(len(parts))))
-    names = []
-    for i, p in enumerate(parts):
-        first, last = titles[p["lo"]], titles[p["hi"] - 1]
-        names.append("%0*d_%s - %s.html" % (width, i + 1, fn_piece(first), fn_piece(last)))
-    plist = [{"lo": p["lo"], "hi": p["hi"], "name": names[i], "a": titles[p["lo"]], "z": titles[p["hi"] - 1]}
-             for i, p in enumerate(parts)]
-    zim_name = os.path.basename(args.zim)
-    built = datetime.date.today().isoformat()
-    title_html = htmllib.escape(args.title)
-    outputs = []
-    for i, p in enumerate(parts):
-        lo, hi = p["lo"], p["hi"]
-        tt_b64 = deflate_b64("\n".join(titles[lo:hi]))
-        rr_text = "\n".join("%s\t%d" % (nm, t) for _, nm, t in red_lines if lo <= t < hi)
-        rr_b64 = deflate_b64(rr_text)
-        head = HEAD.replace("@@TITLE@@", title_html).replace("@@TT@@", tt_b64).replace("@@RR@@", rr_b64).encode("utf-8")
-        meta = {"v": 2, "part": i, "parts": plist, "bs": p["bs"], "zim": zim_name, "built": built,
-                "title": args.title, "total": N}
-        final = os.path.join(args.outdir, names[i])
-        with open(final, "wb") as out:
-            out.write(head)
-            with open(p["blk"], "rb") as src:
-                while True:
-                    chunk = src.read(1 << 20)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-            out.write(make_tail(meta))
-        os.remove(p["blk"])
-        outputs.append(final)
-        size = os.path.getsize(final)
-        log("wrote %s  %.1f MB  (articles %d-%d)%s" % (names[i], size / 1e6, lo, hi - 1,
-            "  WARNING: bigger than %d MB" % args.hard_mb if size > hard_limit else ""))
-
-    zip_outputs(args, outputs, t0)
 
 if __name__ == "__main__":
     main()
