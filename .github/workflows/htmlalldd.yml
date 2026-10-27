@@ -1,0 +1,125 @@
+name: All-in-One HTML Games Bundler
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: 'Paste the ZIP Link of the project (הדבק קישור ל-ZIP הראשי)'
+        required: true
+      release_name:
+        description: 'Name for the final ZIP (שם לאוסף המשחקים)'
+        required: true
+        default: 'All-Games-Collection'
+
+jobs:
+  bundle-all-and-zip:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: pip install beautifulsoup4
+
+      - name: Download and Extract ZIP
+        env:
+          ZIP_URL: ${{ github.event.inputs.zip_url }}
+        run: |
+          mkdir -p workspace/extracted
+          mkdir -p workspace/bundled_games
+          cd workspace
+          wget -O project.zip "$ZIP_URL"
+          unzip project.zip -d extracted
+
+      - name: Find and Bundle EVERY HTML Game
+        run: |
+          cat << 'EOF' > workspace/bundle_all.py
+          import os, base64, re
+          from bs4 import BeautifulSoup
+          
+          start_dir = "workspace/extracted"
+          output_dir = "workspace/bundled_games"
+          
+          # עובר על כל התיקיות וכל הקבצים
+          for root, dirs, files in os.walk(start_dir):
+              if "index.html" in files:
+                  index_path = os.path.join(root, "index.html")
+                  base_dir = root
+                  
+                  # קביעת שם המשחק לפי שם התיקייה שבה הוא נמצא
+                  folder_name = os.path.basename(base_dir)
+                  # אם זו התיקייה הראשית של גיטהאב, נקרא לזה תפריט ראשי
+                  if folder_name.endswith('-master') or folder_name.endswith('-main') or folder_name == 'extracted':
+                      game_name = "main-menu"
+                  else:
+                      game_name = folder_name
+                      
+                  # ניקוי השם מתווים לא חוקיים
+                  game_name = re.sub(r'[^A-Za-z0-9._-]', '_', game_name)
+                  output_path = os.path.join(output_dir, f"{game_name}.html")
+                  
+                  print(f"Bundling: {index_path} -> {output_path}")
+                  
+                  with open(index_path, 'r', encoding='utf-8') as f:
+                      soup = BeautifulSoup(f, 'html.parser')
+                      
+                  # 1. מיזוג ה-CSS
+                  for link in soup.find_all('link', rel='stylesheet'):
+                      css_href = link.get('href')
+                      if css_href:
+                          css_href = css_href.split('?')[0]
+                          css_path = os.path.normpath(os.path.join(base_dir, css_href))
+                          if os.path.exists(css_path):
+                              with open(css_path, 'r', encoding='utf-8') as css_file:
+                                  style_tag = soup.new_tag('style')
+                                  style_tag.string = css_file.read()
+                                  link.replace_with(style_tag)
+                                  
+                  # 2. מיזוג תמונות (Base64)
+                  for img in soup.find_all('img'):
+                      src = img.get('src')
+                      if src and not src.startswith('data:') and not src.startswith('http'):
+                          src_clean = src.split('?')[0]
+                          img_path = os.path.normpath(os.path.join(base_dir, src_clean))
+                          if os.path.exists(img_path):
+                              with open(img_path, 'rb') as img_file:
+                                  encoded = base64.b64encode(img_file.read()).decode('utf-8')
+                                  ext = os.path.splitext(img_path)[1][1:].lower()
+                                  if ext == 'jpg': ext = 'jpeg'
+                                  elif ext == 'svg': ext = 'svg+xml'
+                                  img['src'] = f"data:image/{ext};base64,{encoded}"
+                                  
+                  # שמירת ה-HTML המאוחד
+                  with open(output_path, 'w', encoding='utf-8') as f:
+                      f.write(str(soup))
+                      
+          EOF
+          python3 workspace/bundle_all.py
+
+      - name: Zip Collection and Upload to GitHub Releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NAME: ${{ github.event.inputs.release_name }}
+        run: |
+          SAFE_NAME=$(echo "$RELEASE_NAME" | sed 's/[^A-Za-z0-9._-]/_/g')
+          if [ -z "$SAFE_NAME" ]; then SAFE_NAME="Games_Collection"; fi
+          
+          cd workspace/bundled_games
+          
+          # אריזת כל קבצי ה-HTML לתוך קובץ ZIP אחד
+          zip -r "../${SAFE_NAME}.zip" *.html
+          cd ..
+          
+          # העלאה ל-Releases
+          TAG_NAME="collection-${GITHUB_RUN_ID}"
+          gh release create "$TAG_NAME" "${SAFE_NAME}.zip" \
+            --title "🕹️ $RELEASE_NAME" \
+            --notes "האוסף מוכן! ה-ZIP מכיל את כל המשחקים שהיו בפרויקט - כל משחק קובדד לקובץ HTML בודד (ללא תלויות) ונקרא על שם התיקייה שלו."
