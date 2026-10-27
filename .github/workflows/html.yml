@@ -6,10 +6,14 @@ on:
       zip_url:
         description: 'Paste the ZIP Link of the game (הדבק קישור ל-ZIP)'
         required: true
+      folder_name:
+        description: 'Target Folder inside ZIP (leave empty for main folder) - איזה תיקייה לחפש?'
+        required: false
+        default: ''
       game_name:
         description: 'Game Name (שם המשחק)'
         required: true
-        default: 'Connect4'
+        default: 'MyGame'
 
 jobs:
   bundle-and-zip:
@@ -39,29 +43,33 @@ jobs:
           unzip game.zip -d extracted
 
       - name: Merge Everything into ONE Single HTML File
+        env:
+          FOLDER_NAME: ${{ github.event.inputs.folder_name }}
         run: |
           cat << 'EOF' > workspace/bundle.py
           import os, base64
           from bs4 import BeautifulSoup
           
           start_dir = "workspace/extracted"
+          target_folder = os.environ.get('FOLDER_NAME', '').strip()
           index_path = None
           
-          # חיפוש קובץ index.html (העדפה לתיקיית dist במקרה של CodePen)
+          # חיפוש קובץ HTML
           for root, dirs, files in os.walk(start_dir):
-              if "dist" in root.split(os.sep) and "index.html" in files:
-                  index_path = os.path.join(root, "index.html")
-                  break
-          
-          # אם לא נמצא, חיפוש כללי
-          if not index_path:
-              for root, dirs, files in os.walk(start_dir):
-                  if "index.html" in files and "src" not in root.split(os.sep):
-                      index_path = os.path.join(root, "index.html")
-                      break
+              if "index.html" in files:
+                  # אם המשתמש ביקש תיקייה ספציפית (כמו connect-four)
+                  if target_folder:
+                      if target_folder in root.split(os.sep):
+                          index_path = os.path.join(root, "index.html")
+                          break
+                  else:
+                      # חיפוש רגיל (תיקיית dist או ראשית)
+                      if "dist" in root.split(os.sep) or "src" not in root.split(os.sep):
+                          index_path = os.path.join(root, "index.html")
+                          break
                       
           if not index_path:
-              print("Error: Could not find index.html!")
+              print(f"Error: Could not find index.html for '{target_folder}'!")
               exit(1)
               
           print(f"Found HTML at: {index_path}")
@@ -80,10 +88,10 @@ jobs:
                       with open(css_path, 'r', encoding='utf-8') as css_file:
                           style_tag = soup.new_tag('style')
                           style_tag.string = css_file.read()
-                          link.replace_with(style_tag) # החלפת הקישור בקוד עצמו
+                          link.replace_with(style_tag)
                           print(f"Inlined CSS: {css_href}")
                           
-          # 2. קידוד תמונות ל-Base64 והטמעתן
+          # 2. קידוד תמונות ל-Base64
           for img in soup.find_all('img'):
               src = img.get('src')
               if src and not src.startswith('data:') and not src.startswith('http'):
@@ -98,7 +106,7 @@ jobs:
                           img['src'] = f"data:image/{ext};base64,{encoded}"
                           print(f"Inlined Image: {src_clean}")
                           
-          # שמירת קובץ התוצאה הבודד
+          # שמירת קובץ
           output_path = "workspace/SingleGame.html"
           with open(output_path, 'w', encoding='utf-8') as f:
               f.write(str(soup))
@@ -110,20 +118,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_NAME: ${{ github.event.inputs.game_name }}
         run: |
-          # ניקוי השם של המשחק (כדי שיהיה שם קובץ חוקי באנגלית)
           SAFE_NAME=$(echo "$RELEASE_NAME" | sed 's/[^A-Za-z0-9._-]/_/g')
           if [ -z "$SAFE_NAME" ]; then SAFE_NAME="game"; fi
           
           cd workspace
-          
-          # שינוי שם הקובץ מהשם הכללי לשם של המשחק
           mv SingleGame.html "${SAFE_NAME}.html"
-          
-          # יצירת קובץ ZIP מה-HTML השלם
           zip "${SAFE_NAME}.zip" "${SAFE_NAME}.html"
           
-          # העלאת ה-ZIP בלבד ל-Releases
           TAG_NAME="html-${GITHUB_RUN_ID}"
           gh release create "$TAG_NAME" "${SAFE_NAME}.zip" \
             --title "🕹️ $RELEASE_NAME (ZIP)" \
-            --notes "הקובץ עבר מיזוג לקובץ HTML אחד (שכולל בתוכו הכל) ונארז ב-ZIP. חלץ אותו בטלפון ופתח את קובץ ה-HTML שיצא!"
+            --notes "הקובץ נוצר בהצלחה. חלץ ופתח את ה-HTML בקורא שלך!"
