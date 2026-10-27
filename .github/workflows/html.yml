@@ -1,0 +1,116 @@
+name: Single HTML Game Bundler
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: 'Paste the ZIP Link of the game (הדבק קישור ל-ZIP)'
+        required: true
+      game_name:
+        description: 'Game Name (שם המשחק)'
+        required: true
+        default: 'Connect4'
+
+jobs:
+  bundle-html:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: pip install beautifulsoup4
+
+      - name: Download and Extract ZIP
+        env:
+          ZIP_URL: ${{ github.event.inputs.zip_url }}
+        run: |
+          mkdir -p workspace/extracted
+          cd workspace
+          wget -O game.zip "$ZIP_URL"
+          unzip game.zip -d extracted
+
+      - name: Merge Everything into ONE Single HTML File
+        run: |
+          cat << 'EOF' > workspace/bundle.py
+          import os, base64
+          from bs4 import BeautifulSoup
+          
+          start_dir = "workspace/extracted"
+          index_path = None
+          
+          # חיפוש קובץ index.html (העדפה לתיקיית dist במקרה של CodePen)
+          for root, dirs, files in os.walk(start_dir):
+              if "dist" in root.split(os.sep) and "index.html" in files:
+                  index_path = os.path.join(root, "index.html")
+                  break
+          
+          # אם לא נמצא, חיפוש כללי
+          if not index_path:
+              for root, dirs, files in os.walk(start_dir):
+                  if "index.html" in files and "src" not in root.split(os.sep):
+                      index_path = os.path.join(root, "index.html")
+                      break
+                      
+          if not index_path:
+              print("Error: Could not find index.html!")
+              exit(1)
+              
+          print(f"Found HTML at: {index_path}")
+          base_dir = os.path.dirname(index_path)
+          
+          with open(index_path, 'r', encoding='utf-8') as f:
+              soup = BeautifulSoup(f, 'html.parser')
+              
+          # 1. מיזוג ה-CSS ישירות לתוך ה-HTML
+          for link in soup.find_all('link', rel='stylesheet'):
+              css_href = link.get('href')
+              if css_href:
+                  css_href = css_href.split('?')[0]
+                  css_path = os.path.normpath(os.path.join(base_dir, css_href))
+                  if os.path.exists(css_path):
+                      with open(css_path, 'r', encoding='utf-8') as css_file:
+                          style_tag = soup.new_tag('style')
+                          style_tag.string = css_file.read()
+                          link.replace_with(style_tag) # החלפת הקישור בקוד עצמו
+                          print(f"Inlined CSS: {css_href}")
+                          
+          # 2. קידוד תמונות ל-Base64 והטמעתן
+          for img in soup.find_all('img'):
+              src = img.get('src')
+              if src and not src.startswith('data:') and not src.startswith('http'):
+                  src_clean = src.split('?')[0]
+                  img_path = os.path.normpath(os.path.join(base_dir, src_clean))
+                  if os.path.exists(img_path):
+                      with open(img_path, 'rb') as img_file:
+                          encoded = base64.b64encode(img_file.read()).decode('utf-8')
+                          ext = os.path.splitext(img_path)[1][1:].lower()
+                          if ext == 'jpg': ext = 'jpeg'
+                          elif ext == 'svg': ext = 'svg+xml'
+                          img['src'] = f"data:image/{ext};base64,{encoded}"
+                          print(f"Inlined Image: {src_clean}")
+                          
+          # שמירת קובץ התוצאה הבודד
+          output_path = "workspace/SingleGame.html"
+          with open(output_path, 'w', encoding='utf-8') as f:
+              f.write(str(soup))
+          EOF
+          python3 workspace/bundle.py
+
+      - name: Upload Single HTML File to GitHub Releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NAME: ${{ github.event.inputs.game_name }}
+        run: |
+          TAG_NAME="html-${GITHUB_RUN_ID}"
+          gh release create "$TAG_NAME" workspace/SingleGame.html \
+            --title "🕹️ $RELEASE_NAME (קובץ יחיד)" \
+            --notes "יצרנו עבורך קובץ HTML אחד בודד שמכיל הכל! מתאים לקורא אופליין באנדרואיד."
