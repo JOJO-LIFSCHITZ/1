@@ -1,4 +1,4 @@
-name: Single HTML Game Bundler
+name: Single HTML Game Bundler & Zipper
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
         default: 'Connect4'
 
 jobs:
-  bundle-html:
+  bundle-and-zip:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -105,12 +105,25 @@ jobs:
           EOF
           python3 workspace/bundle.py
 
-      - name: Upload Single HTML File to GitHub Releases
+      - name: Zip and Upload to GitHub Releases
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_NAME: ${{ github.event.inputs.game_name }}
         run: |
+          # ניקוי השם של המשחק (כדי שיהיה שם קובץ חוקי באנגלית)
+          SAFE_NAME=$(echo "$RELEASE_NAME" | sed 's/[^A-Za-z0-9._-]/_/g')
+          if [ -z "$SAFE_NAME" ]; then SAFE_NAME="game"; fi
+          
+          cd workspace
+          
+          # שינוי שם הקובץ מהשם הכללי לשם של המשחק
+          mv SingleGame.html "${SAFE_NAME}.html"
+          
+          # יצירת קובץ ZIP מה-HTML השלם
+          zip "${SAFE_NAME}.zip" "${SAFE_NAME}.html"
+          
+          # העלאת ה-ZIP בלבד ל-Releases
           TAG_NAME="html-${GITHUB_RUN_ID}"
-          gh release create "$TAG_NAME" workspace/SingleGame.html \
-            --title "🕹️ $RELEASE_NAME (קובץ יחיד)" \
-            --notes "יצרנו עבורך קובץ HTML אחד בודד שמכיל הכל! מתאים לקורא אופליין באנדרואיד."
+          gh release create "$TAG_NAME" "${SAFE_NAME}.zip" \
+            --title "🕹️ $RELEASE_NAME (ZIP)" \
+            --notes "הקובץ עבר מיזוג לקובץ HTML אחד (שכולל בתוכו הכל) ונארז ב-ZIP. חלץ אותו בטלפון ופתח את קובץ ה-HTML שיצא!"
