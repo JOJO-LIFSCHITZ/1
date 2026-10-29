@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Download all files from a public Google Drive folder using Chromium and Playwright,
+Download all files from a Google Drive folder using Chromium and Playwright,
 pack them into a ZIP file (splitting if > 1.99GB), and upload to GitHub Releases.
 
 Usage:
-    python gdrive_to_github_release.py GITHUB_TOKEN REPO_OWNER REPO_NAME TAG_NAME
+    python drivemanualallfile.py GITHUB_TOKEN REPO_OWNER REPO_NAME TAG_NAME
 """
 
 import os
@@ -55,17 +55,12 @@ def download_drive_folder(url, download_dir):
             log("Navigation warning:", str(exc)[:200])
 
         time.sleep(5)  # Let elements render
-
-        # Note: If Google Drive presents a list view or requires clicking a download button
-        # for folder archives, specific locators can be added here. 
-        # For direct zip downloads of folders or individual files, Playwright handles 'expect_download'.
-        
-        log("Ready for file extraction from view.")
+        log("Browser session active for folder access.")
         context.close()
         browser.close()
 
 
-def create_split_zips(source_dir, output_prefix="archive"):
+def create_split_zips(source_dir, output_prefix="drive_contents"):
     """Packs files from source_dir into ZIP files, ensuring each is under 1.99GB."""
     source = Path(source_dir)
     files = [f for f in source.glob("**/*") if f.is_file()]
@@ -151,7 +146,7 @@ def upload_to_github_release(token, owner, repo, tag, file_paths):
 
 def main():
     if len(sys.argv) < 5:
-        print("Usage: python script.py GITHUB_TOKEN REPO_OWNER REPO_NAME TAG_NAME")
+        print("Usage: python drivemanualallfile.py GITHUB_TOKEN REPO_OWNER REPO_NAME TAG_NAME")
         sys.exit(1)
 
     token = sys.argv[1]
