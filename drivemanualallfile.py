@@ -96,7 +96,7 @@ def upload_to_github_release(token, owner, repo, tag, file_paths):
     """Uploads files to a GitHub Release using GitHub REST API with safe path handling."""
     owner = owner.strip()
     
-    if not repo or repo.isdigit() or '/' in repo:
+    if not repo or '/' in repo:
         env_repo = os.environ.get("GITHUB_REPOSITORY", "")
         if "/" in env_repo:
             repo = env_repo.split("/")[-1]
@@ -162,7 +162,7 @@ def main():
     env_full_repo = os.environ.get("GITHUB_REPOSITORY", "")
     default_repo = env_full_repo.split("/")[-1] if "/" in env_full_repo else "1"
     
-    repo = sys.argv[3] if len(sys.argv) > 3 and not sys.argv[3].isdigit() else default_repo
+    repo = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3].strip() else default_repo
     tag = sys.argv[4] if len(sys.argv) > 4 else "v1.0.0"
     drive_url = sys.argv[5] if len(sys.argv) > 5 else DEFAULT_DRIVE_URL
 
