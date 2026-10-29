@@ -4,7 +4,7 @@ Download all files from a Google Drive folder using Chromium and Playwright,
 pack them into a ZIP file (splitting if > 1.99GB), and upload to GitHub Releases.
 
 Usage:
-    python drivemanualallfile.py GITHUB_TOKEN REPO_OWNER REPO_NAME TAG_NAME
+    python drivemanualallfile.py GITHUB_TOKEN REPO_OWNER REPO_NAME TAG_NAME DRIVE_URL
 """
 
 import os
@@ -16,7 +16,7 @@ import requests
 from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-DRIVE_FOLDER_URL = (
+DEFAULT_DRIVE_URL = (
     "https://drive.google.com/drive/folders/1V4PsxUB8mPBJe44TqzteaMcJKgsxAe9C?usp=sharing"
 )
 
@@ -48,7 +48,7 @@ def download_drive_folder(url, download_dir):
         page = context.new_page()
         page.set_default_timeout(120_000)
 
-        log("Opening Google Drive folder URL...")
+        log(f"Opening Google Drive folder URL: {url}")
         try:
             page.goto(url, wait_until="networkidle", timeout=90_000)
         except Exception as exc:
@@ -146,19 +146,20 @@ def upload_to_github_release(token, owner, repo, tag, file_paths):
 
 def main():
     if len(sys.argv) < 5:
-        print("Usage: python drivemanualallfile.py GITHUB_TOKEN REPO_OWNER REPO_NAME TAG_NAME")
+        print("Usage: python drivemanualallfile.py GITHUB_TOKEN REPO_OWNER REPO_NAME TAG_NAME [DRIVE_URL]")
         sys.exit(1)
 
     token = sys.argv[1]
     owner = sys.argv[2]
     repo = sys.argv[3]
     tag = sys.argv[4]
+    drive_url = sys.argv[5] if len(sys.argv) > 5 else DEFAULT_DRIVE_URL
 
     workdir = Path("work_download")
     workdir.mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
-    download_drive_folder(DRIVE_FOLDER_URL, workdir)
+    download_drive_folder(drive_url, workdir)
 
     log("Packing files into ZIP archives (split if > 1.99GB)...")
     zip_files = create_split_zips(workdir, output_prefix="drive_contents")
