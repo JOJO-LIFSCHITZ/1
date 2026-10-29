@@ -7,6 +7,10 @@ on:
         description: 'Release Tag Name (e.g. v1.0.0)'
         required: true
         default: 'v1.0.0'
+      drive_url:
+        description: 'Google Drive Folder URL'
+        required: true
+        default: 'https://drive.google.com/drive/folders/1V4PsxUB8mPBJe44TqzteaMcJKgsxAe9C?usp=sharing'
 
 jobs:
   build-and-release:
@@ -30,4 +34,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python drivemanualallfile.py "${{ secrets.GITHUB_TOKEN }}" "${{ github.repository_owner }}" "${{ github.repository }}" "${{ inputs.tag_name }}"
+          python drivemanualallfile.py "${{ secrets.GITHUB_TOKEN }}" "${{ github.repository_owner }}" "${{ github.repository }}" "${{ inputs.tag_name }}" "${{ inputs.drive_url }}"
