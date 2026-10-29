@@ -33,7 +33,7 @@ def log(*a):
 
 
 def download_drive_folder(url, download_dir):
-    """Opens the Google Drive folder via Playwright and downloads its contents."""
+    """Opens the Google Drive folder via Playwright and handles downloads."""
     download_path = Path(download_dir)
     download_path.mkdir(parents=True, exist_ok=True)
 
@@ -53,8 +53,26 @@ def download_drive_folder(url, download_dir):
         except Exception as exc:
             log("Navigation warning:", str(exc)[:200])
 
-        time.sleep(5)
-        log("Browser session active for folder access.")
+        # המתנה לטעינת האלמנטים בתיקייה
+        time.sleep(8)
+        
+        # ניסיון ללחוץ על כפתור ההורדה הגלובלי של התיקייה במידה וקיים (תפריט עליון או שלוש נקודות)
+        try:
+            # מחפש כפתור הורדה או תפריט פעולות
+            download_trigger = page.locator('div[aria-label="הורדה"], div[aria-label="Download"], [data-tooltip*="הורדה"]')
+            if download_trigger.count() > 0:
+                log("Found download option, clicking...")
+                with page.expect_download(timeout=60_000) as download_info:
+                    download_trigger.first.click()
+                download = download_info.value
+                dest_file = download_path / download.suggested_filename
+                download.save_as(str(dest_file))
+                log(f"Successfully downloaded archive: {dest_file.name}")
+        except Exception as e:
+            log("Direct folder download trigger not found or failed, scanning page elements...", str(e)[:100])
+
+        # אם לא ירד קובץ ארכיון ישירות, נסמך על קבצים שירדו או ניצור קובץ אינדיקציה אם התיקייה ריקה לחלוטין מבחינת הדפדפן
+        time.sleep(3)
         context.close()
         browser.close()
 
@@ -64,6 +82,13 @@ def create_split_zips(source_dir, output_prefix="drive_contents"):
     source = Path(source_dir)
     files = [f for f in source.glob("**/*") if f.is_file()]
     
+    # אם התיקייה ריקה לחלוטין מקבצים אמיתיים שהורדו, ניצור קובץ התראה בתוך ה-ZIP כדי שלא יהיה ריק לחלוטין
+    if not files:
+        log("Warning: No files found in download directory. Creating placeholder info file.")
+        placeholder = source / "README_DOWNLOAD_FAILED.txt"
+        placeholder.write_text("Google Drive folder contents could not be automatically fetched via headless browser session due to permissions or UI restrictions.")
+        files = [placeholder]
+
     zips = []
     current_zip_index = 1
     current_size = 0
@@ -76,6 +101,8 @@ def create_split_zips(source_dir, output_prefix="drive_contents"):
     for file_path in files:
         file_size = file_path.stat().st_size
         arcname = file_path.relative_to(source)
+        if arcname.name == current_zip_path.name:
+            continue
 
         if current_size + file_size > MAX_PART_SIZE:
             z_file.close()
