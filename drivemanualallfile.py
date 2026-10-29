@@ -10,11 +10,10 @@ Usage:
 import os
 import sys
 import time
-import math
 import zipfile
 import requests
 from pathlib import Path
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 
 DEFAULT_DRIVE_URL = (
     "https://drive.google.com/drive/folders/1V4PsxUB8mPBJe44TqzteaMcJKgsxAe9C?usp=sharing"
@@ -54,7 +53,7 @@ def download_drive_folder(url, download_dir):
         except Exception as exc:
             log("Navigation warning:", str(exc)[:200])
 
-        time.sleep(5)  # Let elements render
+        time.sleep(5)
         log("Browser session active for folder access.")
         context.close()
         browser.close()
@@ -95,9 +94,17 @@ def create_split_zips(source_dir, output_prefix="drive_contents"):
 
 def upload_to_github_release(token, owner, repo, tag, file_paths):
     """Uploads files to a GitHub Release using GitHub REST API with safe path handling."""
-    # ניקוי ערכים במקרה של רווחים או תווים מיותרים
     owner = owner.strip()
-    repo = repo.strip().split('/')[-1]  # לוקח רק את שם הריפו הנקי במידה והועבר בטעות עם נתיב
+    
+    # אם ה-repo שהתקבל הוא מספר (כמו '1') או ריק, נשלוף אוטומטית מאיכות הסביבה של GitHub
+    if not repo or repo.isdigit() or '/' in repo:
+        env_repo = os.environ.get("GITHUB_REPOSITORY", "")
+        if "/" in env_repo:
+            repo = env_repo.split("/")[-1]
+        else:
+            repo = "1"  # ברירת מחדל בטוחה אם אין ברירה
+
+    repo = repo.strip()
     tag = tag.strip()
 
     headers = {
@@ -121,7 +128,7 @@ def upload_to_github_release(token, owner, repo, tag, file_paths):
         },
     )
 
-    if resp.status_code == 422:  # Release might already exist
+    if resp.status_code == 422:
         log("Release already exists, fetching release info...")
         tag_resp = requests.get(f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", headers=headers)
         tag_resp.raise_for_status()
@@ -134,47 +141,7 @@ def upload_to_github_release(token, owner, repo, tag, file_paths):
 
     base_upload_url = upload_url_template.split("{")[0]
 
-    # Upload each archive file
     for fpath in file_paths:
         fpath = Path(fpath)
         file_size = fpath.stat().st_size
-        log(f"Uploading {fpath.name} ({file_size / 1024 / 1024:.1f} MB) to GitHub Releases...")
-
-        upload_endpoint = f"{base_upload_url}?name={fpath.name}"
-        with open(fpath, "rb") as f:
-            upload_headers = headers.copy()
-            upload_headers["Content-Type"] = "application/zip"
-            
-            up_resp = requests.post(upload_endpoint, headers=upload_headers, data=f)
-            up_resp.raise_for_status()
-            log(f"Successfully uploaded: {fpath.name}")
-
-
-def main():
-    if len(sys.argv) < 5:
-        print("Usage: python drivemanualallfile.py GITHUB_TOKEN REPO_OWNER REPO_NAME TAG_NAME [DRIVE_URL]")
-        sys.exit(1)
-
-    token = sys.argv[1]
-    owner = sys.argv[2]
-    repo = sys.argv[3]
-    tag = sys.argv[4]
-    drive_url = sys.argv[5] if len(sys.argv) > 5 else DEFAULT_DRIVE_URL
-
-    workdir = Path("work_download")
-    workdir.mkdir(parents=True, exist_ok=True)
-
-    t0 = time.time()
-    download_drive_folder(drive_url, workdir)
-
-    log("Packing files into ZIP archives (split if > 1.99GB)...")
-    zip_files = create_split_zips(workdir, output_prefix="drive_contents")
-
-    log("Uploading archives to GitHub Releases...")
-    upload_to_github_release(token, owner, repo, tag, zip_files)
-
-    log(f"Done in {(time.time() - t0) / 60:.1f} minutes.")
-
-
-if __name__ == "__main__":
-    main()
+        log(f"
