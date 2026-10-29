@@ -94,15 +94,21 @@ def create_split_zips(source_dir, output_prefix="drive_contents"):
 
 
 def upload_to_github_release(token, owner, repo, tag, file_paths):
-    """Uploads files to a GitHub Release using GitHub REST API."""
+    """Uploads files to a GitHub Release using GitHub REST API with safe path handling."""
+    # ניקוי ערכים במקרה של רווחים או תווים מיותרים
+    owner = owner.strip()
+    repo = repo.strip().split('/')[-1]  # לוקח רק את שם הריפו הנקי במידה והועבר בטעות עם נתיב
+    tag = tag.strip()
+
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    # 1. Create or get the Release
     release_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
+    log(f"Target GitHub Release API: {release_url}")
+
     resp = requests.post(
         release_url,
         headers=headers,
@@ -117,9 +123,9 @@ def upload_to_github_release(token, owner, repo, tag, file_paths):
 
     if resp.status_code == 422:  # Release might already exist
         log("Release already exists, fetching release info...")
-        resp = requests.get(f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", headers=headers)
-        resp.raise_for_status()
-        release_data = resp.json()
+        tag_resp = requests.get(f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", headers=headers)
+        tag_resp.raise_for_status()
+        release_data = tag_resp.json()
         upload_url_template = release_data["upload_url"]
     else:
         resp.raise_for_status()
@@ -128,7 +134,7 @@ def upload_to_github_release(token, owner, repo, tag, file_paths):
 
     base_upload_url = upload_url_template.split("{")[0]
 
-    # 2. Upload each archive file
+    # Upload each archive file
     for fpath in file_paths:
         fpath = Path(fpath)
         file_size = fpath.stat().st_size
