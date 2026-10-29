@@ -30,8 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests playwright
-          playwright install chromium
+          pip install requests gdown
 
       - name: Run download and release script
         env:
