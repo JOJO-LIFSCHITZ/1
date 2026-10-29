@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Download all files from a Google Drive folder using Chromium and Playwright,
+Download all files from a Google Drive folder using gdown,
 pack them into a ZIP file (splitting if > 1.99GB), and upload to GitHub Releases.
 
 Usage:
@@ -11,18 +11,12 @@ import os
 import sys
 import time
 import zipfile
+import subprocess
 import requests
 from pathlib import Path
-from playwright.sync_api import sync_playwright
 
 DEFAULT_DRIVE_URL = (
     "https://drive.google.com/drive/folders/1V4PsxUB8mPBJe44TqzteaMcJKgsxAe9C?usp=sharing"
-)
-
-UA = (
-    "Mozilla/5.0 (X11; Linux x86_64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Safari/537.36"
 )
 
 MAX_PART_SIZE = int(1.99 * 1024 * 1024 * 1024)  # 1.99 GiB in bytes
@@ -33,48 +27,21 @@ def log(*a):
 
 
 def download_drive_folder(url, download_dir):
-    """Opens the Google Drive folder via Playwright and handles downloads."""
+    """Downloads a public Google Drive folder using gdown."""
     download_path = Path(download_dir)
     download_path.mkdir(parents=True, exist_ok=True)
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            accept_downloads=True,
-            user_agent=UA,
-            locale="he-IL",
-        )
-        page = context.new_page()
-        page.set_default_timeout(120_000)
-
-        log("Opening Google Drive folder URL: " + url)
-        try:
-            page.goto(url, wait_until="networkidle", timeout=90_000)
-        except Exception as exc:
-            log("Navigation warning:", str(exc)[:200])
-
-        # המתנה לטעינת האלמנטים בתיקייה
-        time.sleep(8)
-        
-        # ניסיון ללחוץ על כפתור ההורדה הגלובלי של התיקייה במידה וקיים (תפריט עליון או שלוש נקודות)
-        try:
-            # מחפש כפתור הורדה או תפריט פעולות
-            download_trigger = page.locator('div[aria-label="הורדה"], div[aria-label="Download"], [data-tooltip*="הורדה"]')
-            if download_trigger.count() > 0:
-                log("Found download option, clicking...")
-                with page.expect_download(timeout=60_000) as download_info:
-                    download_trigger.first.click()
-                download = download_info.value
-                dest_file = download_path / download.suggested_filename
-                download.save_as(str(dest_file))
-                log(f"Successfully downloaded archive: {dest_file.name}")
-        except Exception as e:
-            log("Direct folder download trigger not found or failed, scanning page elements...", str(e)[:100])
-
-        # אם לא ירד קובץ ארכיון ישירות, נסמך על קבצים שירדו או ניצור קובץ אינדיקציה אם התיקייה ריקה לחלוטין מבחינת הדפדפן
-        time.sleep(3)
-        context.close()
-        browser.close()
+    log("Starting download from Google Drive folder: " + url)
+    
+    # שימוש ב-gdown להורדת תיקייה שלמה
+    cmd = ["gdown", "--folder", "--output", str(download_path), url]
+    
+    try:
+        result = subprocess.run(cmd, check=True, text=True, capture_output=True)
+        log("gdown output: " + result.stdout[:500])
+    except subprocess.CalledProcessError as e:
+        log("gdown error output: " + e.stderr)
+        raise RuntimeError("Failed to download folder from Google Drive using gdown.")
 
 
 def create_split_zips(source_dir, output_prefix="drive_contents"):
@@ -82,11 +49,10 @@ def create_split_zips(source_dir, output_prefix="drive_contents"):
     source = Path(source_dir)
     files = [f for f in source.glob("**/*") if f.is_file()]
     
-    # אם התיקייה ריקה לחלוטין מקבצים אמיתיים שהורדו, ניצור קובץ התראה בתוך ה-ZIP כדי שלא יהיה ריק לחלוטין
     if not files:
-        log("Warning: No files found in download directory. Creating placeholder info file.")
+        log("Warning: No files found in download directory after gdown.")
         placeholder = source / "README_DOWNLOAD_FAILED.txt"
-        placeholder.write_text("Google Drive folder contents could not be automatically fetched via headless browser session due to permissions or UI restrictions.")
+        placeholder.write_text("No files were retrieved from Google Drive.")
         files = [placeholder]
 
     zips = []
@@ -148,7 +114,7 @@ def upload_to_github_release(token, owner, repo, tag, file_paths):
         json={
             "tag_name": tag,
             "name": f"Release {tag}",
-            "body": "Automated upload of Google Drive folder contents.",
+            "body": "Automated download and upload of Google Drive folder contents.",
             "draft": False,
             "prerelease": False,
         },
