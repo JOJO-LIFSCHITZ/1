@@ -26,6 +26,10 @@ import time
 import zipfile
 from urllib.parse import unquote
 
+import base64
+from urllib.parse import quote
+
+
 import lxml.html
 from lxml import etree
 
@@ -33,7 +37,7 @@ from lxml import etree
 # cleaning rules
 # ----------------------------------------------------------------------------------------------
 DROP_TAGS = {
-    "script", "style", "link", "meta", "img", "picture", "source", "video", "audio", "track", "svg",
+    "script", "style", "link", "meta", "source", "video", "audio", "track",
     "canvas", "noscript", "iframe", "object", "embed", "template", "form", "button", "input", "select",
     "textarea", "header", "nav", "footer", "aside", "h1", "head", "title", "base", "map", "area",
 }
@@ -170,7 +174,38 @@ def clean_article(data, path):
     return s or "<p>(ערך ריק)</p>"
 
 
-def worker_init():
+   def _image_data(path):
+       """מחזיר (mime, בייטים) של קובץ תמונה מתוך ה‑ZIM."""
+       try:
+           entry = ARC.get_entry_by_path(path)
+           item = entry.get_item()
+           # סוג הקובץ (png, jpg, gif, …) נקבע מה‑mimetype של האייטם
+           mime = item.mimetype or "application/octet-stream"
+           return mime, bytes(item.content)
+       except Exception:
+           return None, None
+
+   # אחרי שה‑body נטען:
+   for img in list(body.iter("img")):
+       src = img.get("src")
+       if not src:
+           img.drop_tree()
+           continue
+
+       # הסרת פרמטרים ו‑hashes, נורמליזציה כמו ב‑resolve()
+       src = src.split("#", 1)[0].split("?", 1)[0]
+       raw = unquote(src)
+       full_path = posixpath.normpath(posixpath.join(posixpath.dirname(path), raw))
+
+       mime, data = _image_data(full_path)
+       if data:
+           b64 = base64.b64encode(data).decode("ascii")
+           img.set("src", f"data:{mime};base64,{b64}")
+       else:
+           # אם לא מצאנו את הקובץ – משאירים את התג ריק או מוחקים
+           img.drop_tree()
+
+ def worker_init():
     global ARC
     from libzim.reader import Archive
     ARC = Archive(ZIM_PATH)
