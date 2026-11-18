@@ -205,7 +205,7 @@ jobs:
           EXTRA=""
           if [ "$KEEP_REFS" = "true" ]; then EXTRA="$EXTRA --keep-references"; fi
           if [ -n "$LIMIT" ]; then EXTRA="$EXTRA --limit $LIMIT"; fi
-          python3 wiki_he_to_html.py \
+          python3 -X faulthandler wiki_he_to_html.py \
             --zim work/src.zim \
             --workdir work/tmp \
             --outdir output \
