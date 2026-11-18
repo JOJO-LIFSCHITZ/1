@@ -20,7 +20,7 @@ on:
         required: false
         type: string
         default: "https://dev.hamichlol.org.il/w/upload/michlol/hamichlol_he_zimnew_novid_2026-03.zim"
-        
+
 
       variant:
         description: "Wikipedia ZIM type: nopic = full articles without images, mini = only the intro of each article (small, good for a first test)"
@@ -125,7 +125,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python packages
-        run: pip install libzim lxml
+        run: pip install libzim lxml requests gdown
 
       - name: Install Chrome (Hamichlol only)
         if: matrix.source == 'hamichlol'
@@ -173,12 +173,20 @@ jobs:
           )"
           fi
           echo "ZIM URL: $ZIM_URL"
-          if [ "$SOURCE" = "hamichlol" ]; then
-            # Hamichlol blocks plain curl: open it through a real Chrome, which then downloads the file
-            python3 chrome_download.py "$ZIM_URL" work/src.zim
-          else
-            curl -fL --retry 10 --retry-delay 15 --retry-all-errors -C - -A "Mozilla/5.0" -o work/src.zim "$ZIM_URL"
-          fi
+          case "$ZIM_URL" in
+            *drive.google.com*|*drive.usercontent.google.com*|*docs.google.com*)
+              # Google Drive big files return a "can't scan for viruses" page: download_zim.py handles it
+              python3 download_zim.py "$ZIM_URL" work/src.zim
+              ;;
+            *)
+              if [ "$SOURCE" = "hamichlol" ]; then
+                # Hamichlol blocks plain curl: open it through a real Chrome, which then downloads the file
+                python3 chrome_download.py "$ZIM_URL" work/src.zim
+              else
+                curl -fL --retry 10 --retry-delay 15 --retry-all-errors -C - -A "Mozilla/5.0" -o work/src.zim "$ZIM_URL"
+              fi
+              ;;
+          esac
           ls -lh work/src.zim
           test "$(stat -c %s work/src.zim)" -gt 1000000
           # a real ZIM file starts with the bytes 5a 49 4d 04
