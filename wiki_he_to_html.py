@@ -276,18 +276,36 @@ def pass1(zim, limit):
     arc = Archive(zim)
     total = arc.entry_count
     log("ZIM entries:", total, "| new namespace scheme:", arc.has_new_namespace_scheme)
+    try:
+        from importlib.metadata import version as _pkg_version
+        log("libzim version:", _pkg_version("libzim"))
+    except Exception:
+        pass
     arts, reds = {}, {}
+    getter = getattr(arc, "_get_entry_by_id", None) or getattr(arc, "get_entry_by_id", None)
+    if getter is None:
+        log("ERROR: this libzim version has no get-entry-by-id method. Entry related methods:",
+            [n for n in dir(arc) if "entry" in n.lower()])
+        sys.exit(1)
+    errors = 0
     for i in range(total):
         try:
-            e = arc._get_entry_by_id(i)
+            e = getter(i)
             if e.is_redirect:
                 reds[e.path] = (e.title or e.path, e.get_item().path)
             else:
                 it = e.get_item()
                 if it.mimetype.startswith("text/html"):
                     arts[e.path] = e.title or e.path.replace("_", " ")
-        except Exception:
+        except Exception as ex:
+            errors += 1
+            if errors <= 5:
+                log("  entry %d failed: %r" % (i, ex))
             continue
+    if errors:
+        log("entries that failed to read:", errors, "of", total)
+    if errors == total:
+        log("ALL entries failed. Entry related methods of Archive:", [n for n in dir(arc) if "entry" in n.lower()])
         if i and i % 200000 == 0:
             log("  scanned", i, "of", total, "| articles", len(arts), "redirects", len(reds))
     if limit:
