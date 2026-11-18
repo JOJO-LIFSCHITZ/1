@@ -212,7 +212,7 @@ jobs:
             --part-mb "$PART_MB" \
             --title "$TITLE" \
             --base-name "$BASE" \
-            --zip $EXTRA
+            --zip $EXTRA || { rc=$?; echo "PYTHON EXIT CODE: $rc"; ls -lh work/src.zim; exit $rc; }
           ls -lh output
           df -h /
 
