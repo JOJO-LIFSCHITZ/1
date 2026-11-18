@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Kiwix ZIM (Hebrew Wikipedia / Wikiquote / Hamichlol, no images)  ->  plain offline HTML files (NO JavaScript needed).
+Kiwix ZIM (Hebrew Wikipedia / Wikiquote / Hamichlol)  ->  plain offline HTML files (NO JavaScript needed).
+Images are embedded inside the HTML as base64 data URIs (can be disabled with --no-images).
 
 Output layout
   * one folder per first letter (22 Hebrew letters; "אחר" is created only if there are articles that start
@@ -13,7 +14,7 @@ Output layout
   * everything is packed into ONE zip; only if it would be bigger than ~1.99GB it is split into several zips
 """
 import argparse
-import collections
+import base64
 import html as htmllib
 import itertools
 import multiprocessing as mp
@@ -25,10 +26,6 @@ import sys
 import time
 import zipfile
 from urllib.parse import unquote
-
-import base64
-from urllib.parse import quote
-
 
 import lxml.html
 from lxml import etree
@@ -63,6 +60,8 @@ PID = {}
 ARC = None
 ZIM_PATH = None
 DROP_CLASSES = DROP_CLASSES_BASE
+EMBED_IMAGES = True
+MAX_IMG_BYTES = 400 * 1024
 
 
 def log(*a):
@@ -90,6 +89,68 @@ def _lookup(p):
     if r is None:
         r = PID.get(p.replace(" ", "_"))
     return r
+
+
+# ----------------------------------------------------------------------------------------------
+# images -> base64
+# ----------------------------------------------------------------------------------------------
+def _norm_img_path(p):
+    p = posixpath.normpath(p)
+    while p.startswith("../"):
+        p = p[3:]
+    return p.lstrip("/")
+
+
+def _image_uri(src, base_dir):
+    """src of an <img> -> 'data:<mime>;base64,...' read from the ZIM, or None if not found / too big / not an image."""
+    src = src.split("#", 1)[0].split("?", 1)[0]
+    if not src:
+        return None
+    raw = unquote(src)
+    cands = [_norm_img_path(posixpath.join(base_dir, raw))]
+    alt = _norm_img_path(raw)
+    if alt not in cands:
+        cands.append(alt)
+    for c in list(cands):
+        c2 = c.replace(" ", "_")
+        if c2 not in cands:
+            cands.append(c2)
+    for c in cands:
+        try:
+            item = ARC.get_entry_by_path(c).get_item()
+            mime = (item.mimetype or "").split(";")[0].strip().lower()
+            if not mime.startswith("image/"):
+                continue
+            try:
+                if item.size > MAX_IMG_BYTES:
+                    return None
+            except Exception:
+                pass
+            content = bytes(item.content)
+            if not content or len(content) > MAX_IMG_BYTES:
+                return None
+            return "data:%s;base64,%s" % (mime, base64.b64encode(content).decode("ascii"))
+        except Exception:
+            continue
+    return None
+
+
+def embed_images(body, base_dir):
+    """Replace the src of every <img> with a base64 data URI; images that can't be found are removed."""
+    for img in list(body.iter("img")):
+        if img.getparent() is None:
+            continue
+        src = img.get("src") or img.get("data-src")
+        uri = None
+        if src:
+            if src.startswith("data:image/"):
+                uri = src
+            elif not (src.startswith("//") or SCHEME.match(src)):
+                uri = _image_uri(src, base_dir)
+        if uri is None:
+            img.drop_tree()
+            continue
+        img.set("src", uri)
 
 
 def clean_article(data, path):
@@ -126,6 +187,14 @@ def clean_article(data, path):
         if el.getparent() is not None:
             el.drop_tree()
 
+    # images: must happen BEFORE the attributes are stripped below
+    if EMBED_IMAGES:
+        embed_images(body, base_dir)
+    else:
+        for img in list(body.iter("img")):
+            if img.getparent() is not None:
+                img.drop_tree()
+
     unwrap, anchors = [], []
     for el in body.iter():
         t = el.tag
@@ -141,6 +210,14 @@ def clean_article(data, path):
             keep = {}
             if t in ("td", "th"):
                 for k in ("colspan", "rowspan"):
+                    v = a.get(k)
+                    if v and v.isdigit():
+                        keep[k] = v
+            elif t == "img":
+                v = a.get("src")
+                if v:
+                    keep["src"] = v
+                for k in ("width", "height"):
                     v = a.get(k)
                     if v and v.isdigit():
                         keep[k] = v
@@ -174,38 +251,7 @@ def clean_article(data, path):
     return s or "<p>(ערך ריק)</p>"
 
 
-   def _image_data(path):
-       """מחזיר (mime, בייטים) של קובץ תמונה מתוך ה‑ZIM."""
-       try:
-           entry = ARC.get_entry_by_path(path)
-           item = entry.get_item()
-           # סוג הקובץ (png, jpg, gif, …) נקבע מה‑mimetype של האייטם
-           mime = item.mimetype or "application/octet-stream"
-           return mime, bytes(item.content)
-       except Exception:
-           return None, None
-
-   # אחרי שה‑body נטען:
-   for img in list(body.iter("img")):
-       src = img.get("src")
-       if not src:
-           img.drop_tree()
-           continue
-
-       # הסרת פרמטרים ו‑hashes, נורמליזציה כמו ב‑resolve()
-       src = src.split("#", 1)[0].split("?", 1)[0]
-       raw = unquote(src)
-       full_path = posixpath.normpath(posixpath.join(posixpath.dirname(path), raw))
-
-       mime, data = _image_data(full_path)
-       if data:
-           b64 = base64.b64encode(data).decode("ascii")
-           img.set("src", f"data:{mime};base64,{b64}")
-       else:
-           # אם לא מצאנו את הקובץ – משאירים את התג ריק או מוחקים
-           img.drop_tree()
-
- def worker_init():
+def worker_init():
     global ARC
     from libzim.reader import Archive
     ARC = Archive(ZIM_PATH)
@@ -284,11 +330,12 @@ STATIC_CSS = (
     "h1{font-size:1.45em;border-bottom:1px solid #999;margin:.8em 0 .4em}"
     "h2{font-size:1.25em;border-bottom:1px solid #999;margin-top:1.3em}h3{font-size:1.1em}"
     "a{color:#0645ad}table{border-collapse:collapse;display:block;overflow-x:auto}td,th{border:1px solid #999;padding:3px 6px}"
+    "img{max-width:100%;height:auto}"
     ".bar a{display:inline-block;padding:4px 9px;margin:2px;border:1px solid #999;border-radius:5px;text-decoration:none}"
     ".t div{padding:3px 0}"
     ".art{content-visibility:auto;contain-intrinsic-size:auto 1500px;border-bottom:2px solid #888;padding-bottom:6px}"
     ".pm{color:#fff;background:#1a73e8;border-radius:4px;padding:0 6px;font-size:.8em;margin-left:6px}"
-    "@media (prefers-color-scheme:dark){body{background:#121212;color:#e4e4e4}a{color:#8ab4f8}}"
+    "@media (prefers-color-scheme:dark){body{background:#121212;color:#e4e4e4}a{color:#8ab4f8}img{background:#fff}}"
 )
 
 BAR_HTML = ('<div id="bar"><a href="#top">&#8593;</a><a href="#toc">התחלה</a><a href="#p25">25%</a>'
@@ -349,7 +396,6 @@ def emit_list(out, entries, plen):
 
 def build_static(args, db, titles, red_lines, N):
     import bisect
-    from urllib.parse import quote
     esc = htmllib.escape
     part_limit = int(args.part_mb * 1024 * 1024)
     hard_limit = int(args.hard_mb * 1024 * 1024)
@@ -503,7 +549,7 @@ def zip_outputs(args, items, t0):
 
 # ----------------------------------------------------------------------------------------------
 def main():
-    global PID, ZIM_PATH, DROP_CLASSES
+    global PID, ZIM_PATH, DROP_CLASSES, EMBED_IMAGES, MAX_IMG_BYTES
     ap = argparse.ArgumentParser()
     ap.add_argument("--zim", required=True)
     ap.add_argument("--workdir", default="work")
@@ -514,6 +560,8 @@ def main():
     ap.add_argument("--title", default="ויקיפדיה העברית", help="name shown inside the files")
     ap.add_argument("--keep-references", action="store_true")
     ap.add_argument("--no-redirects", action="store_true", help="do not add redirect names to the indexes")
+    ap.add_argument("--no-images", action="store_true", help="do not embed images (they are removed)")
+    ap.add_argument("--max-img-kb", type=int, default=400, help="skip images bigger than this (KB, before base64)")
     ap.add_argument("--limit", type=int, default=0, help="only first N articles (testing)")
     ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--zip", action="store_true", help="pack everything into one ZIP (split only above the limit) and delete the .html")
@@ -527,6 +575,8 @@ def main():
     ZIM_PATH = args.zim
     workers = args.workers or max(1, os.cpu_count() or 2)
     DROP_CLASSES = DROP_CLASSES_BASE | (set() if args.keep_references else DROP_CLASSES_REFS)
+    EMBED_IMAGES = not args.no_images
+    MAX_IMG_BYTES = args.max_img_kb * 1024
 
     # ---- pass 1
     t0 = time.time()
